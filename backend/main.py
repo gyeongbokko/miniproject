@@ -473,7 +473,7 @@ class ModernSkinAnalyzer:
             
             # 모델이 로드되지 않은 경우 기본값 반환
             if self.age_model is None or self.age_transforms is None:
-                return "20-29", 0.6
+                return "측정 불가", 0.6
             
             # 이미지 변환 및 모델 추론
             inputs = self.age_transforms(pil_image, return_tensors='pt')
@@ -488,13 +488,13 @@ class ModernSkinAnalyzer:
             age_ranges = {
                 0: "0-2",
                 1: "3-9",
-                2: "10-19",
-                3: "20-29",
-                4: "30-39",
-                5: "40-49",
-                6: "50-59",
-                7: "60-69",
-                8: "70+"
+                2: "10대",
+                3: "20대",
+                4: "30대",
+                5: "40대",
+                6: "50대",
+                7: "60대",
+                8: "70대 이상"
             }
             
             predicted_range = age_ranges[pred_class]
