@@ -22,6 +22,10 @@ const SkinAnalyzer2025 = () => {
   const faceCheckInterval = useRef(null);
   const countDownInterval = useRef(null);
   const dropZoneRef = useRef(null);
+  const [scale, setScale] = useState({ x: 1, y: 1 });
+  const imageRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
+  const [imageLoaded, setImageLoaded] = useState(false);
 
   const API_BASE_URL = 'http://localhost:8000';
 
@@ -687,6 +691,112 @@ const SkinAnalyzer2025 = () => {
     }
   }, [cameraActive, startCamera]);
 
+  // 이미지 크기에 따른 스케일 계산
+  useEffect(() => {
+    const calculateScale = () => {
+      if (imageRef.current && analysisResult?.analyzed_width > 0) {
+        setScale({
+          x: imageRef.current.clientWidth / analysisResult.analyzed_width,
+          y: imageRef.current.clientHeight / analysisResult.analyzed_height,
+        });
+      }
+    };
+    
+    const img = imageRef.current;
+    if (img?.complete) {
+      calculateScale();
+    } else if (img) {
+      img.onload = calculateScale;
+    }
+    
+    window.addEventListener('resize', calculateScale);
+    return () => window.removeEventListener('resize', calculateScale);
+  }, [analysisResult]);
+
+  // drawAcneBoundaries 함수를 useCallback으로 감싸서 메모이제이션
+  const drawAcneBoundaries = useCallback(() => {
+    if (!canvasRef.current || !imageRef.current || !analysisResult?.acne_lesions) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const img = imageRef.current;
+
+    // 캔버스 크기를 이미지 표시 크기에 맞춤
+    canvas.width = img.clientWidth;
+    canvas.height = img.clientHeight;
+
+    // 캔버스 초기화
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 여드름 위치 표시
+    analysisResult.acne_lesions.forEach(lesion => {
+      const x = lesion.x * scale.x;
+      const y = lesion.y * scale.y;
+      const width = lesion.width * scale.x;
+      const height = lesion.height * scale.y;
+
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, width, height);
+
+      // 신뢰도 표시
+      ctx.fillStyle = 'red';
+      ctx.font = '12px Arial';
+      ctx.fillText(`${Math.round(lesion.confidence * 100)}%`, x, y - 5);
+    });
+  }, [analysisResult?.acne_lesions, scale]);
+
+  // 이미지 로드 및 크기 변경 시 스케일 업데이트
+  useEffect(() => {
+    if (imageRef.current && analysisResult?.acne_lesions && imageLoaded) {
+      const img = imageRef.current;
+      const newScale = {
+        x: img.clientWidth / img.naturalWidth,
+        y: img.clientHeight / img.naturalHeight
+      };
+
+      // 스케일이 실제로 변경되었을 때만 업데이트
+      if (newScale.x !== scale.x || newScale.y !== scale.y) {
+        setScale(newScale);
+      }
+    }
+  }, [imageLoaded, analysisResult?.acne_lesions]);
+
+  // 스케일이 변경될 때만 여드름 경계 다시 그리기
+  useEffect(() => {
+    if (imageLoaded && analysisResult?.acne_lesions) {
+      drawAcneBoundaries();
+    }
+  }, [scale, drawAcneBoundaries, imageLoaded, analysisResult?.acne_lesions]);
+
+  // 윈도우 리사이즈 이벤트 처리
+  useEffect(() => {
+    const handleResize = () => {
+      if (imageRef.current && analysisResult?.acne_lesions && imageLoaded) {
+        const img = imageRef.current;
+        const newScale = {
+          x: img.clientWidth / img.naturalWidth,
+          y: img.clientHeight / img.naturalHeight
+        };
+        setScale(newScale);
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [imageLoaded, analysisResult?.acne_lesions]);
+
+  const handleImageLoad = () => {
+    setImageLoaded(true);
+    if (imageRef.current && analysisResult) {
+      const img = imageRef.current;
+      setScale({
+        x: img.clientWidth / img.naturalWidth,
+        y: img.clientHeight / img.naturalHeight
+      });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-pink-50 via-purple-50 to-indigo-50 p-4">
       <div className="max-w-md mx-auto">
@@ -755,12 +865,14 @@ const SkinAnalyzer2025 = () => {
                   ) : capturedImage ? (
                     <div className="w-full h-full bg-white rounded-3xl p-4">
                       <div className="w-full h-full relative rounded-2xl overflow-hidden bg-gray-50">
-                        <img
-                          src={capturedImage}
-                          alt="촬영된 이미지"
+                        <img 
+                          ref={imageRef} 
+                          src={capturedImage} 
+                          alt="촬영된 이미지" 
                           className="absolute inset-0 w-full h-full object-cover"
                           style={{
-                            objectPosition: 'center'
+                            objectPosition: 'center',
+                            transform: `scale(${scale.x}, ${scale.y})`
                           }}
                         />
                       </div>
@@ -929,6 +1041,50 @@ const SkinAnalyzer2025 = () => {
                   ></div>
                   <p className="text-sm text-gray-600 font-medium">AI가 분석한 당신의 피부색</p>
                   <p className="text-xs text-gray-500">{analysisResult.skin_tone}</p>
+                </div>
+              )}
+
+              {/* 분석된 이미지와 여드름 위치 표시 */}
+              <div className="relative mb-6 rounded-2xl overflow-hidden shadow-lg">
+                <img 
+                  ref={imageRef}
+                  src={capturedImage}
+                  alt="분석된 이미지"
+                  className="w-full h-auto"
+                  onLoad={handleImageLoad}
+                />
+                {analysisResult.acne_lesions && analysisResult.acne_lesions.map((lesion, index) => (
+                  <div
+                    key={index}
+                    className="absolute border-2 border-red-500 rounded-sm"
+                    style={{
+                      left: `${lesion.x * scale.x}px`,
+                      top: `${lesion.y * scale.y}px`,
+                      width: `${lesion.width * scale.x}px`,
+                      height: `${lesion.height * scale.y}px`,
+                      backgroundColor: 'rgba(255, 0, 0, 0.1)',
+                    }}
+                  >
+                    <div className="absolute -top-5 left-0 bg-red-500 text-white text-xs px-2 py-1 rounded">
+                      {Math.round(lesion.confidence * 100)}%
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* 여드름 감지 요약 */}
+              {analysisResult.acne_lesions && analysisResult.acne_lesions.length > 0 && (
+                <div className="bg-red-50 rounded-xl p-4 mb-6">
+                  <h4 className="font-bold text-red-800 mb-2 flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5" />
+                    여드름 감지 결과
+                  </h4>
+                  <p className="text-sm text-red-700">
+                    총 {analysisResult.acne_lesions.length}개의 여드름이 감지되었습니다.
+                  </p>
+                  <p className="text-xs text-red-600 mt-1">
+                    * 빨간색 박스는 AI가 감지한 여드름 위치를 나타냅니다.
+                  </p>
                 </div>
               )}
 
