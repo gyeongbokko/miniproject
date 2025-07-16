@@ -8,7 +8,7 @@ import io
 import base64
 from typing import Dict, List, Optional
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import math
 import requests
 import aiohttp
@@ -261,15 +261,15 @@ class ModernSkinAnalyzer:
             # 2. 메모리에 있는 이미지를 임시 파일로 저장
             # Roboflow API는 파일 경로를 요구하기 때문입니다.
             temp_dir = "temp_images"
-            os.makedirs(temp_dir, exist_ok=True)
+            os.makedirs(temp_dir, exist_ok=True) # 임시 폴더가 없으면 생성
             temp_filename = f"{str(uuid.uuid4())}.jpg"
             temp_filepath = os.path.join(temp_dir, temp_filename)
             
             # OpenCV 이미지를 파일로 저장 (BGR -> RGB 변환 후 저장)
             cv2.imwrite(temp_filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
-            # 3. Roboflow 서버로 추론 요청 (신뢰도 40%, 중복제거 50% 설정)
-            prediction = model.predict(temp_filepath, confidence=40, overlap=50).json()
+            # 3. Roboflow 서버로 추론 요청 (신뢰도 15%, 중복제거 45% 설정)
+            prediction = model.predict(temp_filepath, confidence=15, overlap=45).json()
             
             # 4. 임시 파일 삭제
             os.remove(temp_filepath)
@@ -277,6 +277,8 @@ class ModernSkinAnalyzer:
             # 5. 결과 파싱 (왼쪽 상단 좌표로 변환)
             acne_lesions = []
             for pred in prediction.get('predictions', []):
+                # Roboflow는 박스의 '중심' 좌표를 주므로,
+                # CSS에서 사용하기 쉬운 '왼쪽 상단' 좌표로 변환합니다.
                 acne_lesions.append({
                     "x": int(pred['x'] - pred['width'] / 2),
                     "y": int(pred['y'] - pred['height'] / 2),
@@ -288,10 +290,12 @@ class ModernSkinAnalyzer:
             return acne_lesions
 
         except Exception as e:
+            # --- 6. 오류 처리 ---
+            # 위 과정에서 어떤 오류든 발생하면, 터미널에 로그를 남기고
+            # 안전하게 빈 리스트를 반환하여 프로그램이 멈추지 않도록 합니다.
             logger.error(f"Roboflow API 여드름 탐지 오류: {e}")
-            # 오류 발생 시에도 임시 파일이 남아있다면 삭제
             if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
+                os.remove(temp_filepath) # 오류 시에도 임시 파일이 남지 않게 정리
             return []
 
     def enhanced_skin_detection(self, image: np.ndarray) -> Dict:
@@ -695,22 +699,7 @@ async def analyze_skin_base64(request: dict):
             "analysis_method": "2025년 최신 AI 기반 분석",
             "processing_time": f"{result.processing_time:.2f}s",
             "ai_version": result.analysis_version,
-            "result": {
-                "skin_type": result.skin_type,
-                "moisture_level": result.moisture_level,
-                "oil_level": result.oil_level,
-                "blemish_count": result.blemish_count,
-                "skin_tone": result.skin_tone,
-                "wrinkle_level": result.wrinkle_level,
-                "pore_size": result.pore_size,
-                "overall_score": result.overall_score,
-                "avg_skin_color": result.avg_skin_color,
-                "face_detected": result.face_detected,
-                "confidence": result.confidence,
-                "skin_area_percentage": result.skin_area_percentage,
-                "detected_features": result.detected_features,
-                "api_method": result.api_method
-            }
+            "result": asdict(result) # result 객체의 모든 데이터를 자동으로 포함
         }
         
     except Exception as e:

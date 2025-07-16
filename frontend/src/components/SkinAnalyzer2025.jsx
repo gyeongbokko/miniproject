@@ -16,7 +16,10 @@ const SkinAnalyzer2025 = () => {
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const streamRef = useRef(null);
-
+  // --- 추가된 부분: ResultView에서 사용할 변수들을 부모 컴포넌트로 이동 ---
+  const imageRef = useRef(null);
+  const [scale, setScale] = useState({ x: 1, y: 1 });
+  // --- 추가된 부분 끝 ---
   const API_BASE_URL = 'http://localhost:8000';
 
   // 2025년 API 상태 확인..
@@ -128,7 +131,7 @@ const SkinAnalyzer2025 = () => {
   };
 
   // 2025년 고화질 사진 촬영
-  const capturePhoto = () => {
+  const capturePhoto = useCallback(() => {
     if (videoRef.current && canvasRef.current) {
       const canvas = canvasRef.current;
       const video = videoRef.current;
@@ -146,7 +149,7 @@ const SkinAnalyzer2025 = () => {
       setCapturedImage(imageData);
       stopCamera();
     }
-  };
+  }, [stopCamera]);
 
   // 파일 업로드 (2025년 향상된 검증)
   const handleFileUpload = (event) => {
@@ -328,6 +331,32 @@ const SkinAnalyzer2025 = () => {
   useEffect(() => {
     console.log('카메라 활성 상태가 변경되었습니다:', cameraActive);
   }, [cameraActive]);
+
+  // --- 추가된 부분: 스케일 계산 로직(useEffect)을 부모 컴포넌트로 이동 ---
+  useEffect(() => {
+    const calculateScale = () => {
+      // 'result'가 아닌 'analysisResult'를 사용해야 합니다.
+      if (imageRef.current && analysisResult && analysisResult.analyzed_width > 0) {
+        setScale({
+          x: imageRef.current.clientWidth / analysisResult.analyzed_width,
+          y: imageRef.current.clientHeight / analysisResult.analyzed_height,
+        });
+      }
+    };
+    
+    const img = imageRef.current;
+    if (img?.complete) {
+      calculateScale();
+    } else if (img) {
+      img.onload = calculateScale;
+    }
+    
+    window.addEventListener('resize', calculateScale);
+    return () => window.removeEventListener('resize', calculateScale);
+    // 의존성 배열에도 'analysisResult'를 사용해야 합니다.
+  }, [analysisResult]); // analysisResult가 생기면 이 effect가 다시 실행됩니다.
+  // --- 추가된 부분 끝 ---
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-pink-50 via-purple-50 to-indigo-50 p-4">
@@ -584,7 +613,23 @@ const SkinAnalyzer2025 = () => {
                   <p className="text-xs text-gray-500">{analysisResult.skin_tone}</p>
                 </div>
               )}
-
+              {/* --- 추가된 부분: 분석 이미지와 네모 박스 표시 --- */}
+              <div className="relative mb-6 rounded-2xl overflow-hidden shadow-lg">
+                <img ref={imageRef} src={capturedImage} alt="분석된 이미지" className="w-full h-auto" />
+                {analysisResult.acne_lesions && analysisResult.acne_lesions.map((lesion, index) => (
+                  <div
+                    key={index}
+                    className="absolute border-2 border-red-500 rounded-sm"
+                    style={{
+                      left: `${lesion.x * scale.x}px`,
+                      top: `${lesion.y * scale.y}px`,
+                      width: `${lesion.w * scale.x}px`,
+                      height: `${lesion.h * scale.y}px`,
+                    }}
+                  ></div>
+                ))}
+              </div>
+              {/* --- 추가된 부분 끝 --- */}
               {/* 분석 결과 상세 (2025년 카드 디자인) */}
               <div className="grid grid-cols-2 gap-3 mb-6">
                 <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-2xl p-4 text-center">
