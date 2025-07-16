@@ -19,7 +19,7 @@ const SkinAnalyzer2025 = () => {
 
   const API_BASE_URL = 'http://localhost:8000';
 
-  // 2025년 API 상태 확인
+  // 2025년 API 상태 확인..
   const checkApiHealth = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/health`);

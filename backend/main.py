@@ -502,7 +502,7 @@ class ModernSkinAnalyzer:
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             cleaned = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel)
             
-            # 연결된 구성 요소 분석 (2025년 개선)
+            # 연결된 구성 요소 분석 (2025년 개선).
             num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned)
             
             blemish_count = 0
@@ -527,7 +527,7 @@ class ModernSkinAnalyzer:
             return "큼"
         elif skin_type == "건성" and texture_var < 100:
             return "매우 작음"
-        elif skin_type == "건성":
+        elif skin_type == "건성":  
             return "작음"
         elif texture_var > 250:
             return "큼"
@@ -650,6 +650,7 @@ async def analyze_skin_base64(request: dict):
     except Exception as e:
         logger.error(f"2025년 이미지 처리 오류: {e}")
         raise HTTPException(status_code=500, detail=f"이미지 처리 중 오류 발생: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn
