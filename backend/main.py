@@ -16,6 +16,11 @@ import asyncio
 from scipy import ndimage
 from sklearn.cluster import KMeans
 import time
+# 라이브러리 임포트
+import roboflow
+from roboflow import Roboflow
+import os
+import uuid
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -53,7 +58,14 @@ class SkinAnalysisResult:
     detected_features: List[str]
     processing_time: float
     api_method: str
-    analysis_version: str = "2025.1.0"
+    
+    # --- 아래 필드들이 새로 추가되었습니다 ---
+    analyzed_width: int
+    analyzed_height: int
+    acne_lesions: List[Dict]
+    care_tips: List[str]
+    
+    analysis_version: str = "2025.1.0" # 기본값이 있는 필드는 맨 뒤로 이동
 
 class ModernSkinAnalyzer:
     def __init__(self):
