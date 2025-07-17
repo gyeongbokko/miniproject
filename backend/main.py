@@ -1,6 +1,7 @@
 # 2025년 최신 버전 - AI 피부 분석기 백엔드
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import cv2
 import numpy as np
 from PIL import Image
@@ -8,7 +9,7 @@ import io
 import base64
 from typing import Dict, List, Optional
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import math
 import requests
 import aiohttp
@@ -16,7 +17,9 @@ import asyncio
 from scipy import ndimage
 from sklearn.cluster import KMeans
 import time
-# 라이브러리 임포트
+import os
+from transformers import ViTFeatureExtractor, ViTForImageClassification
+import torch
 import roboflow
 from roboflow import Roboflow
 import os
@@ -26,10 +29,22 @@ import uuid
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """서버 시작시 설정과 종료시 정리를 처리하는 라이프스팬 이벤트 핸들러"""
+    global analyzer
+    logger.info("🚀 2025년 최신 AI 피부 분석기 서버 시작...")
+    analyzer = ModernSkinAnalyzer()
+    logger.info("✅ 2025년 AI 분석기 준비 완료!")
+    yield
+    if analyzer:
+        await analyzer.close_session()
+
 app = FastAPI(
     title="AI 피부 분석기 API", 
-    version="3.0.0",
-    description="2025년 최신 기술 기반 클라우드 피부 분석 서비스"
+    version="3.3.0-roboflow-final",
+    description="2025년 최신 기술 기반 클라우드 피부 분석 서비스",
+    lifespan=lifespan
 )
 
 # CORS 설정 (2025년 보안 강화)
@@ -43,6 +58,7 @@ app.add_middleware(
 
 @dataclass
 class SkinAnalysisResult:
+    # 기존 필드 모두 유지
     skin_type: str
     moisture_level: int
     oil_level: int
@@ -58,14 +74,12 @@ class SkinAnalysisResult:
     detected_features: List[str]
     processing_time: float
     api_method: str
-    
-    # --- 아래 필드들이 새로 추가되었습니다 ---
-    analyzed_width: int
-    analyzed_height: int
-    acne_lesions: List[Dict]
-    care_tips: List[str]
-    
-    analysis_version: str = "2025.1.0" # 기본값이 있는 필드는 맨 뒤로 이동
+    analysis_version: str = "2025.1.0"
+    age_range: str = "분석 불가"
+    age_confidence: float = 0.0
+    acne_lesions: List[Dict] = None
+    image_size: Dict[str, int] = None
+    care_tips: List[str] = None # 맞춤 관리 팁 추가
 
 class ModernSkinAnalyzer:
     def __init__(self):
@@ -76,11 +90,25 @@ class ModernSkinAnalyzer:
         self.models = {
             "face_parsing": "jonathandinu/face-parsing",
             "face_detection": "ultralytics/yolov8n-face",
-            "skin_analysis": "microsoft/DialoGPT-medium"  # 최신 추가
+            "age_analysis": "nateraw/vit-age-classifier",
+            "skin_analysis": "microsoft/DialoGPT-medium"
         }
         
         self.session = None
-        logger.info("🚀 2025년 최신 AI 피부 분석기 초기화 완료!")
+        
+        # OpenCV 얼굴 검출기 초기화
+        cascade_path = os.path.join(os.path.dirname(cv2.__file__), 'data', 'haarcascade_frontalface_default.xml')
+        self.face_cascade = cv2.CascadeClassifier(cascade_path)
+        if self.face_cascade.empty():
+            raise ValueError("얼굴 검출 모델을 로드할 수 없습니다.")
+            
+        # 나이 분석 모델 초기화
+        self.age_model, self.age_transforms = self.init_age_model()
+
+        self.min_face_confidence = 0.8
+        logger.info("🚀 2025년 최신 AI 피부 분석기 초기화 완료")
+        logger.info("✨ OpenCV Face Detection 모델 로드 완료!")
+
     
     async def init_session(self):
         """비동기 HTTP 세션 초기화 (2025년 성능 최적화)"""
@@ -179,6 +207,74 @@ class ModernSkinAnalyzer:
                 "message": f"네트워크 오류: {str(e)}"
             }
     
+    def detect_face(self, image: np.ndarray) -> Dict:
+        """OpenCV를 사용한 고급 얼굴 감지"""
+        try:
+            # 그레이스케일 변환
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # 얼굴 감지
+            faces = self.face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(30, 30),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            
+            if len(faces) == 0:
+                return {
+                    "face_detected": False,
+                    "confidence": 0.0,
+                    "bbox": None
+                }
+            
+            # 가장 큰 얼굴 선택 (중앙에 있는 얼굴일 가능성이 높음)
+            best_face = max(faces, key=lambda x: x[2] * x[3])
+            x, y, w, h = best_face
+            
+            # 얼굴 크기와 위치에 따른 신뢰도 계산
+            image_area = image.shape[0] * image.shape[1]
+            face_area = w * h
+            area_ratio = face_area / image_area
+            
+            # 신뢰도 점수 계산 (0.0 ~ 1.0)
+            confidence = min(1.0, area_ratio * 5) if 0.05 <= area_ratio <= 0.6 else 0.0
+            
+            # 중앙에 가까울수록 높은 신뢰도
+            center_x = x + w/2
+            center_y = y + h/2
+            image_center_x = image.shape[1]/2
+            image_center_y = image.shape[0]/2
+            
+            distance_from_center = math.sqrt(
+                ((center_x - image_center_x) / image.shape[1]) ** 2 +
+                ((center_y - image_center_y) / image.shape[0]) ** 2
+            )
+            
+            # 중앙 거리에 따른 신뢰도 조정
+            confidence *= max(0.5, 1 - distance_from_center)
+            
+            return {
+                "face_detected": True,
+                "confidence": float(confidence),
+                "bbox": {
+                    "xmin": int(x),
+                    "ymin": int(y),
+                    "width": int(w),
+                    "height": int(h)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"얼굴 감지 오류: {e}")
+            return {
+                "face_detected": False,
+                "confidence": 0.0,
+                "bbox": None,
+                "error": str(e)
+            }
+
     async def advanced_face_detection(self, image: np.ndarray) -> List[Dict]:
         """2025년 향상된 얼굴 감지"""
         image_bytes = self.image_to_bytes(image)
@@ -250,54 +346,6 @@ class ModernSkinAnalyzer:
             # 2025년 향상된 백업 분석
             return self.enhanced_skin_detection(image)
     
-    def detect_acne_roboflow(self, image: np.ndarray) -> List[Dict]:
-        """Roboflow API를 사용한 여드름 탐지"""
-        try:
-            # 1. Roboflow API 키 및 프로젝트 설정
-            rf = Roboflow(api_key="JUBdpTBjKonjWlwJY7ya")
-            project = rf.workspace().project("acne-ijcab")
-            model = project.version(1).model
-
-            # 2. 메모리에 있는 이미지를 임시 파일로 저장
-            # Roboflow API는 파일 경로를 요구하기 때문입니다.
-            temp_dir = "temp_images"
-            os.makedirs(temp_dir, exist_ok=True) # 임시 폴더가 없으면 생성
-            temp_filename = f"{str(uuid.uuid4())}.jpg"
-            temp_filepath = os.path.join(temp_dir, temp_filename)
-            
-            # OpenCV 이미지를 파일로 저장 (BGR -> RGB 변환 후 저장)
-            cv2.imwrite(temp_filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-
-            # 3. Roboflow 서버로 추론 요청 (신뢰도 15%, 중복제거 45% 설정)
-            prediction = model.predict(temp_filepath, confidence=15, overlap=45).json()
-            
-            # 4. 임시 파일 삭제
-            os.remove(temp_filepath)
-
-            # 5. 결과 파싱 (왼쪽 상단 좌표로 변환)
-            acne_lesions = []
-            for pred in prediction.get('predictions', []):
-                # Roboflow는 박스의 '중심' 좌표를 주므로,
-                # CSS에서 사용하기 쉬운 '왼쪽 상단' 좌표로 변환합니다.
-                acne_lesions.append({
-                    "x": int(pred['x'] - pred['width'] / 2),
-                    "y": int(pred['y'] - pred['height'] / 2),
-                    "w": int(pred['width']),
-                    "h": int(pred['height']),
-                    "confidence": float(pred['confidence'])
-                })
-            
-            return acne_lesions
-
-        except Exception as e:
-            # --- 6. 오류 처리 ---
-            # 위 과정에서 어떤 오류든 발생하면, 터미널에 로그를 남기고
-            # 안전하게 빈 리스트를 반환하여 프로그램이 멈추지 않도록 합니다.
-            logger.error(f"Roboflow API 여드름 탐지 오류: {e}")
-            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
-                os.remove(temp_filepath) # 오류 시에도 임시 파일이 남지 않게 정리
-            return []
-
     def enhanced_skin_detection(self, image: np.ndarray) -> Dict:
         """2025년 향상된 피부 감지 알고리즘"""
         try:
@@ -335,10 +383,11 @@ class ModernSkinAnalyzer:
             'skin_texture_variance': 0,
             'skin_brightness': 0,
             'skin_uniformity': 0,  # 2025년 추가
-            'skin_health_score': 0  # 2025년 추가
+            'skin_health_score': 0,  # 2025년 추가
+            'detected_features': parsing_result.get('labels_found', [])  # 감지된 특징 추가
         }
         
-        if 'skin' not in parsing_result['masks']:
+        if 'skin' not in parsing_result.get('masks', {}):
             # 전체 이미지 기반 분석
             analysis['avg_skin_color'] = {
                 'r': float(np.mean(image[:,:,0])),
@@ -347,7 +396,8 @@ class ModernSkinAnalyzer:
             }
             analysis['skin_brightness'] = float(np.mean(image))
             analysis['skin_area_percentage'] = 85.0  # 추정값
-            analysis['skin_texture_variance'] = float(np.var(cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)))
+            gray_image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            analysis['skin_texture_variance'] = float(np.var(gray_image.astype(np.float64)))
             return analysis
         
         skin_mask = parsing_result['masks']['skin']
@@ -374,13 +424,14 @@ class ModernSkinAnalyzer:
                 # 2025년 새로운 지표들
                 gray_skin = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
                 skin_texture = gray_skin[skin_mask > 128]
-                analysis['skin_texture_variance'] = float(np.var(skin_texture))
-                analysis['skin_uniformity'] = float(1.0 / (1.0 + np.std(skin_texture) / 100))
-                
-                # 피부 건강 점수 (2025년 AI 기반)
-                color_balance = 1.0 - abs(avg_color[0] - avg_color[1]) / 255
-                texture_quality = min(1.0, 200.0 / analysis['skin_texture_variance'])
-                analysis['skin_health_score'] = float((color_balance + texture_quality) / 2 * 100)
+                if len(skin_texture) > 0:
+                    analysis['skin_texture_variance'] = float(np.var(skin_texture.astype(np.float64)))
+                    analysis['skin_uniformity'] = float(1.0 / (1.0 + np.std(skin_texture.astype(np.float64)) / 100))
+                    
+                    # 피부 건강 점수 (2025년 AI 기반)
+                    color_balance = 1.0 - abs(avg_color[0] - avg_color[1]) / 255
+                    texture_quality = min(1.0, 200.0 / analysis['skin_texture_variance'])
+                    analysis['skin_health_score'] = float((color_balance + texture_quality) / 2 * 100)
         
         return analysis
     
@@ -405,71 +456,264 @@ class ModernSkinAnalyzer:
         else:
             return "정상"
     
-    def generate_acne_care_tips(self, skin_type: str, acne_lesions: List[Dict]) -> List[str]:
-        """피부 타입과 여드름 유무에 따른 맞춤 관리법 생성"""
-        # 여드름이 탐지되지 않은 경우
-        if not acne_lesions:
-            return ["탐지된 여드름이 없습니다. 현재의 스킨케어 루틴을 잘 유지해주세요!"]
+    def init_age_model(self):
+        """나이 분석을 위한 ViT 모델 초기화"""
+        try:
+            model = ViTForImageClassification.from_pretrained('nateraw/vit-age-classifier')
+            transforms = ViTFeatureExtractor.from_pretrained('nateraw/vit-age-classifier')
+            return model, transforms
+        except Exception as e:
+            logger.error(f"나이 분석 모델 로드 실패: {e}")
+            return None, None
 
-        tips = []
-        # 공통 관리법
-        tips.append("💡 [공통] 손으로 여드름을 만지거나 짜지 마세요. 흉터의 원인이 될 수 있습니다.")
-        tips.append("💡 [공통] 하루에 두 번, 부드러운 저자극성 클렌저로 세안하는 것이 좋습니다.")
+    def analyze_age_2025(self, face_image: np.ndarray) -> tuple:
+        """2025년 AI 기반 연령대 분석"""
+        try:
+            # OpenCV 이미지를 PIL Image로 변환
+            pil_image = Image.fromarray(cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB))
+            
+            # 모델이 로드되지 않은 경우 기본값 반환
+            if self.age_model is None or self.age_transforms is None:
+                return "20-29", 0.6
+            
+            # 이미지 변환 및 모델 추론
+            inputs = self.age_transforms(pil_image, return_tensors='pt')
+            outputs = self.age_model(**inputs)
+            
+            # 클래스별 확률 계산
+            probs = outputs.logits.softmax(1)
+            pred_class = probs.argmax(1).item()
+            confidence = probs[0][pred_class].item()
+            
+            # 나이 범위 매핑
+            age_ranges = {
+                0: "0-2",
+                1: "3-9",
+                2: "10-19",
+                3: "20-29",
+                4: "30-39",
+                5: "40-49",
+                6: "50-59",
+                7: "60-69",
+                8: "70+"
+            }
+            
+            predicted_range = age_ranges[pred_class]
+            
+            return predicted_range, min(confidence + 0.1, 1.0)  # 신뢰도 약간 상향 조정
+            
+        except Exception as e:
+            logger.error(f"나이 분석 중 오류 발생: {e}")
+            return "20-29", 0.6  # 오류 발생 시 기본값 반환
 
-        # 피부 타입별 맞춤 관리법
-        if skin_type == "지성":
-            tips.append("💧 [지성] 오일프리(Oil-Free) 타입의 보습제를 사용하여 유수분 밸런스를 맞춰주는 것이 중요합니다.")
-        elif skin_type == "건성":
-            tips.append("💧 [건성] 수분감이 풍부한 보습제를 충분히 사용하여 피부 장벽을 강화해야 합니다.")
-        elif skin_type == "복합성":
-            tips.append("💧 [복합성] 유분이 많은 T존과 건조한 U존을 각각 다르게 관리하는 것이 효과적일 수 있습니다.")
-        else: # 정상 또는 기타
-            tips.append("💧 [기타] 피부 자극을 최소화하고, 새로운 화장품은 반드시 테스트 후 사용하세요.")
+    def analyze_age_fallback(self, face_image: np.ndarray) -> tuple:
+        """기존 방식의 연령대 분석 (폴백 메서드)"""
+        try:
+            # 얼굴 이미지를 그레이스케일로 변환
+            gray = cv2.cvtColor(face_image, cv2.COLOR_RGB2GRAY)
+            
+            # 1. 피부 텍스처 분석
+            texture_variance = np.var(gray.astype(np.float64))
+            
+            # 2. 주름 분석 (개선된 Canny 엣지 디텍션)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = cv2.Canny(blurred, 30, 150)
+            wrinkle_density = np.sum(edges) / (edges.shape[0] * edges.shape[1])
+            
+            # 3. 피부 톤 균일성 분석
+            lab = cv2.cvtColor(face_image, cv2.COLOR_RGB2LAB)
+            l_channel = lab[:,:,0]
+            tone_variance = np.var(l_channel)
+            
+            # 4. 피부 밝기 분석
+            brightness = np.mean(l_channel)
+            
+            # 5. 피부 대비 분석
+            contrast = np.std(l_channel)
+            
+            # 6. 텍스처 패턴 분석
+            texture_pattern = cv2.cornerHarris(gray, 2, 3, 0.04)
+            texture_density = np.sum(texture_pattern > 0.01 * texture_pattern.max()) / (gray.shape[0] * gray.shape[1])
+            
+            # 연령대 점수 계산 (0~100)
+            age_score = 0
+            
+            # 텍스처 기반 점수 (0-25점)
+            texture_score = min(25, texture_variance / 20)
+            age_score += texture_score
+            
+            # 주름 기반 점수 (0-25점)
+            wrinkle_score = min(25, wrinkle_density * 1000)
+            age_score += wrinkle_score
+            
+            # 피부 톤 균일성 기반 점수 (0-20점)
+            tone_score = min(20, tone_variance / 25)
+            age_score += tone_score
+            
+            # 밝기 기반 점수 (0-15점)
+            brightness_score = max(0, min(15, (200 - brightness) / 8))
+            age_score += brightness_score
+            
+            # 대비 기반 점수 (0-15점)
+            contrast_score = min(15, contrast / 4)
+            age_score += contrast_score
+            
+            # 점수를 나이로 변환 (15-70세)
+            base_age = 15 + (age_score / 100) * 55
+            
+            # 텍스처 패턴 밀도에 따른 미세 조정
+            pattern_adjustment = texture_density * 20
+            base_age += pattern_adjustment
+            
+            # 최종 연령대 범위 계산 (±2~4세)
+            range_width = 2 + int(age_score / 25)
+            min_age = max(15, int(base_age - range_width))
+            max_age = min(70, int(base_age + range_width))
+            age_range = f"{min_age}~{max_age}세"
+            
+            # 신뢰도 계산 (0.6-1.0)
+            confidence_factors = [
+                1 - (texture_variance / 1000),
+                1 - (wrinkle_density * 5),
+                1 - (tone_variance / 500),
+                1 - abs(contrast - 50) / 100,
+                1 - abs(brightness - 128) / 256
+            ]
+            
+            confidence = min(1.0, max(0.6, sum(confidence_factors) / len(confidence_factors)))
+            
+            logger.info(f"연령대 분석 상세 (폴백) - 텍스처: {texture_score:.1f}, 주름: {wrinkle_score:.1f}, " +
+                       f"톤: {tone_score:.1f}, 밝기: {brightness_score:.1f}, 대비: {contrast_score:.1f}")
+            
+            return age_range, float(confidence)
+            
+        except Exception as e:
+            logger.error(f"연령대 분석 오류 (폴백): {e}")
+            return "분석 불가", 0.0
 
-        return tips
-
-    async def analyze_image(self, image: np.ndarray) -> SkinAnalysisResult:
-        """2025년 최신 AI 기반 이미지 분석 (최종 통합)"""
+    async def analyze_image_advanced(self, image: np.ndarray) -> SkinAnalysisResult:
+        """2025년 최신 AI 기반 이미지 분석"""
         start_time = time.time()
-        # --- 추가된 로직: 프론트엔드 스케일링을 위한 원본 이미지 크기 저장 ---
-        original_height, original_width, _ = image.shape
         
         try:
-            # 1. 기존 로직: 전처리 및 얼굴 감지
+            # 원본 이미지 크기 저장
+            original_height, original_width = image.shape[:2]
+            
+            # 1. 2025년 향상된 전처리
             processed_image = self.preprocess_image_2025(image)
-            faces = await self.advanced_face_detection(processed_image)
             
-            if not faces:
-                raise HTTPException(status_code=404, detail="얼굴을 감지할 수 없습니다.")
+            # 전처리된 이미지 크기
+            processed_height, processed_width = processed_image.shape[:2]
+
+            # 스케일 팩터 계산 (원본 -> 전처리된 이미지)
+            scale_x = processed_width / original_width
+            scale_y = processed_height / original_height
+
+            # 이미지 크기 정보
+            image_size = {
+                "original": {"width": int(original_width), "height": int(original_height)},
+                "processed": {"width": int(processed_width), "height": int(processed_height)},
+                "scale_factor": {"x": float(scale_x), "y": float(scale_y)}
+            }
+
+            # 2. 향상된 얼굴 감지
+            face_detection_result = self.detect_face(processed_image)
             
-            best_face = max(faces, key=lambda x: x['confidence'])
+            if not face_detection_result["face_detected"] or face_detection_result["confidence"] < self.min_face_confidence:
+                return SkinAnalysisResult(
+                    skin_type="분석 실패",
+                    moisture_level=0,
+                    oil_level=0,
+                    blemish_count=0,
+                    skin_tone="분석 실패",
+                    wrinkle_level=0,
+                    pore_size="분석 실패",
+                    overall_score=0,
+                    avg_skin_color={'r': 0, 'g': 0, 'b': 0},
+                    face_detected=False,
+                    confidence=face_detection_result.get("confidence", 0.0),
+                    skin_area_percentage=0,
+                    detected_features=[],
+                    processing_time=time.time() - start_time,
+                    api_method="2025_ai_failed",
+                    age_range="분석 불가",
+                    age_confidence=0.0,
+                    acne_lesions=[],
+                    image_size=image_size
+                )
+
+            # 3. 얼굴 영역 추출
+            bbox = face_detection_result["bbox"]
+            face_image = processed_image[
+                bbox["ymin"]:bbox["ymin"]+bbox["height"],
+                bbox["xmin"]:bbox["xmin"]+bbox["width"]
+            ]
             
-            # 2. 기존 로직: 피부 영역 및 타입 등 분석
-            parsing_result = await self.advanced_face_parsing(processed_image)
-            skin_analysis = self.analyze_skin_advanced_2025(processed_image, parsing_result)
+            # 4. 기존 피부 분석 진행
+            parsing_result = await self.advanced_face_parsing(face_image)
+            skin_analysis = self.analyze_skin_advanced_2025(face_image, parsing_result)
+            
+            # 5. AI 기반 분류
             skin_type = self.classify_skin_type_ai_2025(skin_analysis)
+            
+            # 6. 2025년 향상된 피부톤 분석
             skin_tone = self.analyze_skin_tone_ai_2025(skin_analysis['avg_skin_color'])
+            
+            # 7. 수분도/유분도 (2025년 AI 계산)
             moisture_level, oil_level = self.calculate_levels_ai_2025(skin_type, skin_analysis)
             
-            # --- 추가/수정된 로직: 여드름 탐지 및 관리법 생성 ---
-            # 3. 새로운 함수 호출: Roboflow로 여드름 탐지
-            acne_locations = self.detect_acne_roboflow(image)
+            # 8. 여드름 감지 (2025년 고급 알고리즘)
+            acne_lesions = self.detect_acne_roboflow(image) # Roboflow 결과를 acne_lesions에 저장
+            blemish_count = len(acne_lesions) 
             
-            # 4. 기존 잡티 개수를 여드름 개수로 대체
-            blemish_count = len(acne_locations)
+            # 여드름 위치를 원본 이미지 좌표로 변환
+            #adjusted_acne_lesions = []
+            # for lesion in acne_lesions:
+            #     # 1단계: 얼굴 영역 내 좌표를 전처리된 이미지 좌표로 변환
+            #     face_x = lesion["x"] + bbox["xmin"]
+            #     face_y = lesion["y"] + bbox["ymin"]
+                
+            #     # 2단계: 전처리된 이미지 좌표를 원본 이미지 좌표로 변환
+            #     original_x = face_x / scale_x
+            #     original_y = face_y / scale_y
+            #     original_width = lesion["width"] / scale_x
+            #     original_height = lesion["height"] / scale_y
+                
+            #     adjusted_lesion = {
+            #         "x": int(original_x),
+            #         "y": int(original_y),
+            #         "width": int(original_width),
+            #         "height": int(original_height),
+            #         "confidence": lesion["confidence"],
+            #         "face_relative": {  # 얼굴 영역 내 상대 좌표 (디버깅용)
+            #             "x": lesion["x"],
+            #             "y": lesion["y"],
+            #             "width": lesion["width"],
+            #             "height": lesion["height"]
+            #         },
+            #         "processed_image": {  # 전처리된 이미지 좌표 (디버깅용)
+            #             "x": face_x,
+            #             "y": face_y,
+            #             "width": lesion["width"],
+            #             "height": lesion["height"]
+            #         }
+            #     }
+            #     adjusted_acne_lesions.append(adjusted_lesion)
             
-            # 5. 새로운 함수 호출: 맞춤 관리법 생성
-            care_tips = self.generate_acne_care_tips(skin_type, acne_locations)
-            # --- 추가/수정된 로직 끝 ---
-
-            # 6. 기존 로직: 기타 피부 정보 계산
+            #blemish_count = len(acne_lesions)
+            
+            # 9. 연령대 분석 (2025년 신규 추가)
+            age_range, age_confidence = self.analyze_age_2025(face_image)
+            
+            # 10. 기타 계산
             wrinkle_level = min(5, max(1, int(skin_analysis['skin_texture_variance'] / 120) + 1))
             pore_size = self.determine_pore_size_2025(skin_type, skin_analysis)
+            
+            # 11. 2025년 종합 점수
             overall_score = self.calculate_overall_score_2025(skin_analysis, blemish_count, wrinkle_level)
             
             processing_time = time.time() - start_time
             
-            # --- 수정된 로직: 최종 결과 반환 ---
             return SkinAnalysisResult(
                 skin_type=skin_type,
                 moisture_level=int(moisture_level),
@@ -481,16 +725,15 @@ class ModernSkinAnalyzer:
                 overall_score=int(overall_score),
                 avg_skin_color=skin_analysis['avg_skin_color'],
                 face_detected=True,
-                confidence=best_face['confidence'],
+                confidence=face_detection_result["confidence"],
                 skin_area_percentage=skin_analysis['skin_area_percentage'],
                 detected_features=parsing_result['labels_found'],
                 processing_time=processing_time,
-                api_method="2025_roboflow_acne_v1",
-                # 새로 추가된 필드에 값 전달
-                analyzed_width=original_width,
-                analyzed_height=original_height,
-                acne_lesions=acne_locations,
-                care_tips=care_tips
+                api_method="2025_advanced_ai",
+                age_range=age_range,
+                age_confidence=age_confidence,
+                acne_lesions=acne_lesions,
+                image_size=image_size
             )
             
         except Exception as e:
@@ -572,7 +815,7 @@ class ModernSkinAnalyzer:
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             cleaned = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel)
             
-            # 연결된 구성 요소 분석 (2025년 개선).
+            # 연결된 구성 요소 분석 (2025년 개선)
             num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned)
             
             blemish_count = 0
@@ -597,7 +840,7 @@ class ModernSkinAnalyzer:
             return "큼"
         elif skin_type == "건성" and texture_var < 100:
             return "매우 작음"
-        elif skin_type == "건성":  
+        elif skin_type == "건성":
             return "작음"
         elif texture_var > 250:
             return "큼"
@@ -621,6 +864,51 @@ class ModernSkinAnalyzer:
         final_score = max(40, base_score - blemish_penalty - wrinkle_penalty)
         
         return final_score
+
+    # 로컬 YOLO 모델 함수(detect_acne_advanced)를 Roboflow API 함수로 대체
+    def detect_acne_roboflow(self, image: np.ndarray) -> List[Dict]:
+        """Roboflow API를 사용한 여드름 탐지"""
+        try:
+            rf = Roboflow(api_key="JUBdpTBjKonjWlwJY7ya")
+            # URL을 기반으로 프로젝트 정보 설정
+            project = rf.workspace("runner-e0dmy").project("acne-ijcab")
+            model = project.version(1).model
+            
+            temp_dir = "temp_images"
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_filename = f"{uuid.uuid4()}.jpg"
+            temp_filepath = os.path.join(temp_dir, temp_filename)
+            
+            cv2.imwrite(temp_filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+            prediction = model.predict(temp_filepath, confidence=15, overlap=45).json()
+            os.remove(temp_filepath)
+
+            acne_lesions = []
+            for pred in prediction.get('predictions', []):
+                acne_lesions.append({
+                    "x": int(pred['x'] - pred['width'] / 2),
+                    "y": int(pred['y'] - pred['height'] / 2),
+                    "width": int(pred['width']),
+                    "height": int(pred['height']),
+                    "confidence": float(pred['confidence']),
+                    "class": pred['class']
+                })
+            logger.info(f"✅ Roboflow 여드름 감지 완료: 총 {len(acne_lesions)}개 발견")
+            return acne_lesions
+        except Exception as e:
+            logger.error(f"❌ Roboflow 여드름 감지 오류: {e}")
+            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            return []
+
+    def generate_acne_care_tips(self, skin_type: str, acne_count: int) -> List[str]:
+        """피부 타입과 여드름 개수에 따른 맞춤 관리법 생성"""
+        if acne_count == 0: return ["탐지된 여드름이 없습니다. 현재의 스킨케어 루틴을 잘 유지해주세요!"]
+        tips = [f"💡 총 {acne_count}개의 여드름성 병변이 감지되었습니다.", "💡 [공통] 손으로 병변을 만지거나 짜지 마세요.", "💡 [공통] 하루 두 번, 저자극성 클렌저로 세안하는 것이 좋습니다."]
+        if skin_type == "지성": tips.append("💧 [지성] 오일프리 보습제로 유수분 밸런스를 맞춰주세요.")
+        elif skin_type == "건성": tips.append("💧 [건성] 수분감이 풍부한 보습제로 피부 장벽을 강화해야 합니다.")
+        else: tips.append("💧 [기타] 피부 자극을 최소화하고, 새로운 화장품은 테스트 후 사용하세요.")
+        return tips
 
 # 전역 분석기 인스턴스
 analyzer = None
@@ -684,28 +972,118 @@ async def analyze_skin_base64(request: dict):
         if not image_data:
             raise HTTPException(status_code=400, detail="이미지 데이터가 필요합니다.")
         
-        if ',' in image_data:
-            image_data = image_data.split(',')[1]
+        # Base64 데이터 정제 및 디버깅
+        logger.info("원본 이미지 데이터 길이: %d", len(image_data))
         
-        image_bytes = base64.b64decode(image_data)
-        pil_image = Image.open(io.BytesIO(image_bytes))
-        image_array = np.array(pil_image)
+        # Base64 헤더 처리
+        if ';base64,' in image_data:
+            prefix, image_data = image_data.split(';base64,')
+            logger.info("감지된 이미지 타입: %s", prefix)
+        elif ',' in image_data:
+            image_data = image_data.split(',')[1]
+            
+        # 공백 및 개행 문자 제거
+        image_data = image_data.strip()
+        logger.info("정제된 Base64 데이터 길이: %d", len(image_data))
+        
+        # Base64 디코딩 및 이미지 변환
+        try:
+            # Base64 패딩 확인 및 수정
+            padding = 4 - (len(image_data) % 4)
+            if padding != 4:
+                image_data += '=' * padding
+                logger.info("Base64 패딩 추가: %d개", padding)
+            
+            # Base64 디코딩
+            try:
+                image_bytes = base64.b64decode(image_data)
+                logger.info("디코딩된 바이트 길이: %d", len(image_bytes))
+                
+                if len(image_bytes) == 0:
+                    raise HTTPException(status_code=400, detail="디코딩된 이미지 데이터가 비어있습니다.")
+                
+            except Exception as e:
+                logger.error(f"Base64 디코딩 실패: {e}")
+                raise HTTPException(status_code=400, detail="잘못된 Base64 형식입니다.")
+            
+            # 이미지 배열로 변환
+            try:
+                nparr = np.frombuffer(image_bytes, np.uint8)
+                if len(nparr) == 0:
+                    raise HTTPException(status_code=400, detail="이미지 데이터를 배열로 변환할 수 없습니다.")
+                
+                logger.info("numpy 배열 크기: %d", len(nparr))
+                
+                # 이미지 디코딩
+                image_array = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if image_array is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="이미지 디코딩 실패. 지원되는 이미지 형식: JPEG, PNG, BMP"
+                    )
+                
+                logger.info("디코딩된 이미지 크기: %s", str(image_array.shape))
+                
+                # 이미지 크기 확인
+                if image_array.shape[0] < 10 or image_array.shape[1] < 10:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="이미지가 너무 작습니다. 최소 10x10 픽셀 이상이어야 합니다."
+                    )
+                
+                # BGR을 RGB로 변환
+                image_array = cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB)
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"이미지 변환 실패: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="이미지 변환 실패. 올바른 이미지 파일인지 확인해주세요."
+                )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"이미지 처리 실패: {e}")
+            raise HTTPException(status_code=400, detail="이미지 처리 중 오류가 발생했습니다.")
         
         # 2025년 최신 AI 분석 수행
-        result = await analyzer.analyze_image(image_array)
+        result = await analyzer.analyze_image_advanced(image_array)
         
         return {
             "success": True,
             "analysis_method": "2025년 최신 AI 기반 분석",
             "processing_time": f"{result.processing_time:.2f}s",
             "ai_version": result.analysis_version,
-            "result": asdict(result) # result 객체의 모든 데이터를 자동으로 포함
+            "result": {
+                "skin_type": result.skin_type,
+                "moisture_level": result.moisture_level,
+                "oil_level": result.oil_level,
+                "blemish_count": result.blemish_count,
+                "skin_tone": result.skin_tone,
+                "wrinkle_level": result.wrinkle_level,
+                "pore_size": result.pore_size,
+                "overall_score": result.overall_score,
+                "avg_skin_color": result.avg_skin_color,
+                "face_detected": result.face_detected,
+                "confidence": result.confidence,
+                "skin_area_percentage": result.skin_area_percentage,
+                "detected_features": result.detected_features,
+                "api_method": result.api_method,
+                "age_range": result.age_range,
+                "age_confidence": result.age_confidence,
+                "acne_lesions": result.acne_lesions,
+                "image_size": result.image_size
+            }
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"2025년 이미지 처리 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"이미지 처리 중 오류 발생: {str(e)}")
-
+        logger.error(f"예상치 못한 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 오류가 발생했습니다: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

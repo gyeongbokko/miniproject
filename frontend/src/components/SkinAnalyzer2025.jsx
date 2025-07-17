@@ -11,18 +11,234 @@ const SkinAnalyzer2025 = () => {
   const [error, setError] = useState(null);
   const [apiStatus, setApiStatus] = useState('checking');
   const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [faceDetected, setFaceDetected] = useState(false);
+  const [countDown, setCountDown] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const streamRef = useRef(null);
-  // --- 추가된 부분: ResultView에서 사용할 변수들을 부모 컴포넌트로 이동 ---
-  const imageRef = useRef(null);
+  const faceCheckInterval = useRef(null);
+  const countDownInterval = useRef(null);
+  const dropZoneRef = useRef(null);
   const [scale, setScale] = useState({ x: 1, y: 1 });
-  // --- 추가된 부분 끝 ---
+  const imageRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
+  const [imageLoaded, setImageLoaded] = useState(false);
+
   const API_BASE_URL = 'http://localhost:8000';
 
-  // 2025년 API 상태 확인..
+  // 카메라 정리 함수 추가
+  const stopCamera = useCallback(() => {
+    console.log('카메라 정리 시작');
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+      });
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+    console.log('카메라 정리 완료');
+  }, []);
+
+  // 2025년 고화질 사진 촬영 (공통)
+  const capturePhoto = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current) {
+      console.error('비디오 또는 캔버스 요소가 없음');
+      return;
+    }
+
+    console.log('사진 촬영 시작');
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    
+    // 비디오가 준비되지 않은 경우 캡처하지 않음
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      console.error('비디오가 아직 준비되지 않았습니다');
+      return;
+    }
+    
+    // 고화질 캡처를 위한 캔버스 크기 설정
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    
+    // 비디오가 좌우 반전되어 있으므로, 캔버스에도 동일하게 반전 적용
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    // 캔버스 변환 초기화
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    try {
+      const imageData = canvas.toDataURL('image/jpeg', 0.95);
+      console.log('촬영된 이미지 크기:', imageData.length);
+      
+      // 이미지 데이터가 유효한지 확인
+      if (imageData.length < 1000) {
+        console.error('캡처된 이미지가 너무 작습니다');
+        setError('사진 촬영에 실패했습니다. 다시 시도해주세요.');
+        return;
+      }
+
+      // 이미지가 유효한 경우에만 상태 업데이트
+      setCapturedImage(imageData);
+      setCurrentStep('capture');
+      
+      // 이미지 로드 테스트
+      const testImage = new Image();
+      testImage.onload = () => {
+        console.log('캡처된 이미지 확인 완료:', {
+          width: testImage.width,
+          height: testImage.height
+        });
+        
+        // 이미지가 정상적으로 로드된 경우에만 카메라 정지
+        if (testImage.width > 0 && testImage.height > 0) {
+          stopCamera();
+          setFaceDetected(false);
+        } else {
+          console.error('캡처된 이미지가 유효하지 않습니다');
+          setError('사진 촬영에 실패했습니다. 다시 시도해주세요.');
+        }
+      };
+      
+      testImage.onerror = () => {
+        console.error('이미지 확인 중 오류 발생');
+        setError('사진 촬영에 실패했습니다. 다시 시도해주세요.');
+      };
+      
+      testImage.src = imageData;
+      
+    } catch (error) {
+      console.error('이미지 캡처 오류:', error);
+      setError('사진 촬영에 실패했습니다.');
+    }
+  }, [stopCamera]);
+
+  // 카운트다운 시작
+  const startCountDown = useCallback(() => {
+    console.log('카운트다운 시작 시도');
+    
+    // 비디오 준비 상태 확인
+    if (!videoRef.current || videoRef.current.videoWidth === 0 || videoRef.current.videoHeight === 0) {
+      console.log('비디오가 아직 준비되지 않아 카운트다운을 시작하지 않습니다.');
+      return;
+    }
+
+    console.log('비디오 준비 완료, 카운트다운 시작:', {
+      width: videoRef.current.videoWidth,
+      height: videoRef.current.videoHeight
+    });
+
+    if (countDownInterval.current) {
+      clearInterval(countDownInterval.current);
+    }
+    
+    setCountDown(3);
+    countDownInterval.current = setInterval(() => {
+      setCountDown(prev => {
+        if (prev <= 1) {
+          clearInterval(countDownInterval.current);
+          // 캡처 직전 마지막으로 비디오 상태 확인
+          if (videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+            capturePhoto();
+          } else {
+            console.error('캡처 시점에 비디오가 준비되지 않음');
+            setError('카메라가 준비되지 않았습니다. 다시 시도해주세요.');
+          }
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, [capturePhoto]);
+
+  // 얼굴 감지 상태 확인
+  const checkFaceDetection = useCallback(async () => {
+    if (!videoRef.current || !canvasRef.current || !cameraActive) return;
+
+    const video = videoRef.current;
+    
+    // 비디오가 준비되지 않은 경우 얼굴 감지를 시도하지 않음
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      console.log('비디오가 아직 준비되지 않았습니다.');
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(video, 0, 0);
+    
+    try {
+      const imageData = canvas.toDataURL('image/jpeg', 0.95);
+      
+      const response = await fetch(`${API_BASE_URL}/analyze-skin-base64`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ image: imageData }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('얼굴 감지 응답 오류:', errorData);
+        throw new Error(errorData.detail || '얼굴 감지 실패');
+      }
+      
+      const data = await response.json();
+      console.log('얼굴 감지 응답:', data);
+      
+      const newFaceDetected = data.result.face_detected && data.result.confidence >= 0.8;
+      
+      // 얼굴 감지 상태가 변경되었을 때
+      if (newFaceDetected !== faceDetected) {
+        setFaceDetected(newFaceDetected);
+        
+        if (newFaceDetected && !countDown) {
+          console.log('얼굴 감지됨, 카운트다운 시작 시도');
+          // 비디오가 준비된 상태에서만 카운트다운 시작
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            startCountDown();
+          } else {
+            console.log('비디오가 준비되지 않아 카운트다운을 연기합니다.');
+          }
+        }
+      }
+      
+      // 카운트다운 중 얼굴이 감지되지 않으면 초기화
+      if (!newFaceDetected && countDown) {
+        console.log('카운트다운 중 얼굴 감지 실패, 카운트다운 초기화');
+        clearInterval(countDownInterval.current);
+        setCountDown(null);
+      }
+      
+    } catch (error) {
+      console.error('얼굴 감지 오류:', error);
+      setFaceDetected(false);
+      // 에러 발생 시 카운트다운 초기화
+      if (countDown) {
+        clearInterval(countDownInterval.current);
+        setCountDown(null);
+      }
+    }
+  }, [API_BASE_URL, cameraActive, faceDetected, countDown, startCountDown]);
+
+  // 2025년 API 상태 확인
   const checkApiHealth = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/health`);
@@ -47,7 +263,7 @@ const SkinAnalyzer2025 = () => {
   }, [checkApiHealth]);
 
   // 카메라 시작 (2025년 최신 웹캠 API)
-  const startCamera = async () => {
+  const startCamera = useCallback(async () => {
     try {
       setError(null);
       console.log('카메라 시작 시도...');
@@ -68,88 +284,124 @@ const SkinAnalyzer2025 = () => {
       streamRef.current = stream;
       
       // 비디오 요소가 렌더링될 때까지 대기
-      setTimeout(() => {
-        console.log('비디오 요소 상태 재확인:', videoRef.current ? '존재함' : '없음');
-        
+      const initVideo = () => {
         if (videoRef.current) {
-          console.log('비디오 요소에 스트림 연결 시도...');
           videoRef.current.srcObject = stream;
-          console.log('비디오 요소에 스트림 연결 완료');
+          videoRef.current.style.transform = 'scaleX(-1)';  // 화면 좌우 반전
           
-          // 비디오 재생이 시작되면 로그 출력
+          // 비디오 메타데이터 로드 완료 시 처리
           videoRef.current.onloadedmetadata = () => {
             console.log('비디오 메타데이터 로드 완료');
-            console.log('비디오 크기:', videoRef.current.videoWidth, 'x', videoRef.current.videoHeight);
-            if (videoRef.current) {
-              videoRef.current.play().then(() => {
-                console.log('비디오 재생 시작됨');
-              }).catch(e => {
-                console.error('비디오 재생 오류:', e);
-              });
-            }
+            videoRef.current.play().catch(e => {
+              console.error('비디오 재생 오류:', e);
+              setError('비디오 재생에 실패했습니다.');
+            });
           };
 
-          // 추가 이벤트 리스너
-          videoRef.current.onloadstart = () => console.log('비디오 로드 시작');
-          videoRef.current.oncanplay = () => console.log('비디오 재생 가능');
-          videoRef.current.onplay = () => console.log('비디오 재생 시작');
-          videoRef.current.onerror = (e) => console.error('비디오 오류:', e);
-
-          // 비디오 요소가 준비되면 즉시 재생 시도
-          setTimeout(() => {
-            if (videoRef.current && videoRef.current.readyState >= 2) {
-              console.log('지연된 비디오 재생 시도...');
-              videoRef.current.play().catch(e => {
-                console.error('지연된 비디오 재생 오류:', e);
-              });
+          // 비디오가 실제로 재생 가능한 상태가 되었을 때 처리
+          videoRef.current.oncanplay = () => {
+            const { videoWidth, videoHeight } = videoRef.current;
+            console.log('비디오 재생 준비 완료:', { videoWidth, videoHeight });
+            
+            // 비디오 크기가 유효한지 확인
+            if (videoWidth === 0 || videoHeight === 0) {
+              console.error('비디오 크기가 유효하지 않음');
+              setError('카메라 초기화에 실패했습니다. 다시 시도해주세요.');
+              stopCamera();
             }
-          }, 100);
+          };
         } else {
-          console.error('비디오 요소를 여전히 찾을 수 없음!');
-          setError('비디오 요소 초기화 실패. 페이지를 새로고침해주세요.');
+          console.log('비디오 요소가 아직 준비되지 않음, 재시도...');
+          setTimeout(initVideo, 100);
         }
-      }, 50); // 50ms 대기 후 비디오 요소 연결 시도
+      };
+
+      initVideo();
       
     } catch (error) {
       console.error('카메라 접근 오류:', error);
-      if (error.name === 'NotAllowedError') {
-        setError('카메라 접근 권한이 거부되었습니다. 브라우저 설정에서 카메라 권한을 허용해주세요.');
-      } else if (error.name === 'NotFoundError') {
-        setError('카메라를 찾을 수 없습니다. 카메라가 연결되어 있는지 확인해주세요.');
-      } else {
-        setError(`카메라 오류: ${error.message}`);
+      setError('카메라 접근에 실패했습니다.');
+      setCameraActive(false);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
     }
-  };
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-      setCameraActive(false);
-    }
-  };
-
-  // 2025년 고화질 사진 촬영
-  const capturePhoto = useCallback(() => {
-    if (videoRef.current && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
-      
-      // 고화질 캡처
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      
-      const ctx = canvas.getContext('2d');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(video, 0, 0);
-      
-      const imageData = canvas.toDataURL('image/jpeg', 0.95); // 고품질
-      setCapturedImage(imageData);
-      stopCamera();
-    }
   }, [stopCamera]);
+
+  // 컴포넌트 정리
+  useEffect(() => {
+    return () => {
+      if (faceCheckInterval.current) {
+        clearInterval(faceCheckInterval.current);
+      }
+      if (countDownInterval.current) {
+        clearInterval(countDownInterval.current);
+      }
+    };
+  }, []);
+
+  // 카메라 시작 시 얼굴 감지 시작
+  useEffect(() => {
+    if (cameraActive && videoRef.current) {
+      // 더 자주 체크하도록 간격 줄임 (1초 -> 500ms)
+      faceCheckInterval.current = setInterval(checkFaceDetection, 500);
+      return () => {
+        if (faceCheckInterval.current) {
+          clearInterval(faceCheckInterval.current);
+        }
+      };
+    }
+  }, [cameraActive, checkFaceDetection]);
+
+  // 카메라 렌더링
+  const renderCamera = () => (
+    <div className="relative w-full max-w-lg mx-auto">
+      <div className="aspect-square w-full overflow-hidden rounded-lg bg-gray-100 relative">
+        <video
+          ref={videoRef}
+          className="absolute inset-0 w-full h-full object-cover"
+          autoPlay
+          playsInline
+          muted
+          style={{
+            transform: 'scaleX(-1)',  // 화면 좌우 반전
+            backgroundColor: '#000',
+          }}
+        />
+        <canvas ref={canvasRef} className="hidden" />
+      </div>
+      
+      {/* 얼굴 인식 상태 표시 */}
+      <div className="absolute top-4 left-4 p-2 rounded-lg bg-black bg-opacity-50 text-white">
+        {faceDetected ? (
+          countDown ? (
+            <span className="flex items-center">
+              <CheckCircle className="w-5 h-5 text-green-400 mr-2" />
+              {countDown}초 후 촬영
+            </span>
+          ) : (
+            <span className="flex items-center">
+              <CheckCircle className="w-5 h-5 text-green-400 mr-2" />
+              얼굴 인식됨
+            </span>
+          )
+        ) : (
+          <span className="flex items-center">
+            <AlertCircle className="w-5 h-5 text-yellow-400 mr-2" />
+            얼굴을 인식할 수 없습니다
+          </span>
+        )}
+      </div>
+
+      {/* 얼굴 가이드라인 */}
+      <div className="absolute inset-0 pointer-events-none">
+        <div className={`absolute top-1/2 left-1/2 w-48 h-60 border-2 rounded-full transform -translate-x-1/2 -translate-y-1/2 shadow-lg ${
+          faceDetected ? 'border-green-500 border-4' : 'border-red-500'
+        }`}></div>
+      </div>
+    </div>
+  );
 
   // 파일 업로드 (2025년 향상된 검증)
   const handleFileUpload = (event) => {
@@ -168,11 +420,114 @@ const SkinAnalyzer2025 = () => {
 
       const reader = new FileReader();
       reader.onload = (e) => {
-        setCapturedImage(e.target.result);
+        const imageData = e.target.result;
+        console.log('이미지 로드 완료:', imageData.substring(0, 50) + '...');
+        setCapturedImage(imageData);
+        setCurrentStep('capture');
+        setError(null);
+      };
+      reader.onerror = () => {
+        console.error('파일 읽기 오류');
+        setError('파일을 읽는 중 오류가 발생했습니다.');
       };
       reader.readAsDataURL(file);
     }
   };
+
+  // 드래그 앤 드롭 이벤트 핸들러
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      
+      // 이미지 파일 검증
+      if (!file.type.startsWith('image/')) {
+        setError('이미지 파일만 업로드 가능합니다.');
+        return;
+      }
+
+      // 파일 크기 검증 (10MB 제한)
+      if (file.size > 10 * 1024 * 1024) {
+        setError('파일 크기는 10MB 이하여야 합니다.');
+        return;
+      }
+
+      try {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const imageData = e.target.result;
+          console.log('이미지 로드 완료:', imageData.substring(0, 50) + '...');
+          setCapturedImage(imageData);
+          setCurrentStep('capture');
+          setError(null);
+        };
+        reader.onerror = () => {
+          console.error('파일 읽기 오류');
+          setError('파일을 읽는 중 오류가 발생했습니다.');
+        };
+        reader.readAsDataURL(file);
+      } catch (error) {
+        console.error('파일 처리 오류:', error);
+        setError('파일을 처리하는 중 오류가 발생했습니다.');
+      }
+    }
+  };
+
+  // 드래그 앤 드롭 영역 렌더링
+  const renderDropZone = () => (
+    <div
+      className={`relative w-full h-64 border-2 border-dashed rounded-lg p-4 text-center 
+        ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300'} 
+        transition-all duration-200 ease-in-out`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <Upload className="w-12 h-12 text-gray-400 mb-4" />
+        <p className="text-lg font-medium text-gray-700">
+          {isDragging ? '파일을 여기에 놓아주세요' : '이미지를 드래그하여 업로드하세요'}
+        </p>
+        <p className="text-sm text-gray-500 mt-2">또는</p>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 
+            transition-colors duration-200"
+        >
+          파일 선택
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFileUpload}
+          className="hidden"
+        />
+      </div>
+    </div>
+  );
 
   // 2025년 최신 AI 피부 분석
   const analyzeSkin = async () => {
@@ -326,20 +681,22 @@ const SkinAnalyzer2025 = () => {
       console.log('컴포넌트가 언마운트됩니다');
       stopCamera();
     };
-  }, []);
+  }, [stopCamera]); // 경고 수정을 위해 stopCamera 추가
 
   useEffect(() => {
     console.log('카메라 활성 상태가 변경되었습니다:', cameraActive);
-  }, [cameraActive]);
+    if (cameraActive) {
+      startCamera();
+    }
+  }, [cameraActive, startCamera]);
 
-  // --- 추가된 부분: 스케일 계산 로직(useEffect)을 부모 컴포넌트로 이동 ---
+  // 이미지 크기에 따른 스케일 계산
   useEffect(() => {
     const calculateScale = () => {
-      // 'result'가 아닌 'analysisResult'를 사용해야 합니다.
-      if (imageRef.current && analysisResult && analysisResult.analyzed_width > 0) {
+      if (imageRef.current && analysisResult?.image_size?.original.width > 0) {
         setScale({
-          x: imageRef.current.clientWidth / analysisResult.analyzed_width,
-          y: imageRef.current.clientHeight / analysisResult.analyzed_height,
+          x: imageRef.current.clientWidth / analysisResult.image_size.original.width,
+          y: imageRef.current.clientHeight / analysisResult.image_size.original.height,
         });
       }
     };
@@ -353,10 +710,91 @@ const SkinAnalyzer2025 = () => {
     
     window.addEventListener('resize', calculateScale);
     return () => window.removeEventListener('resize', calculateScale);
-    // 의존성 배열에도 'analysisResult'를 사용해야 합니다.
-  }, [analysisResult]); // analysisResult가 생기면 이 effect가 다시 실행됩니다.
-  // --- 추가된 부분 끝 ---
+  }, [analysisResult]);
 
+  // drawAcneBoundaries 함수를 useCallback으로 감싸서 메모이제이션
+  const drawAcneBoundaries = useCallback(() => {
+    if (!overlayCanvasRef.current || !imageRef.current || !analysisResult?.acne_lesions) return; // overlayCanvasRef로 변경
+
+    const canvas = overlayCanvasRef.current; // overlayCanvasRef로 변경
+    const ctx = canvas.getContext('2d');
+    const img = imageRef.current;
+
+    // 캔버스 크기를 이미지 표시 크기에 맞춤
+    canvas.width = img.clientWidth;
+    canvas.height = img.clientHeight;
+
+    // 캔버스 초기화
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 여드름 위치 표시
+    analysisResult.acne_lesions.forEach(lesion => {
+      const x = lesion.x * scale.x;
+      const y = lesion.y * scale.y;
+      const width = lesion.width * scale.x;
+      const height = lesion.height * scale.y;
+
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, width, height);
+
+      // 신뢰도 표시
+      ctx.fillStyle = 'red';
+      ctx.font = '12px Arial';
+      ctx.fillText(`${Math.round(lesion.confidence * 100)}%`, x, y - 5);
+    });
+  }, [analysisResult?.acne_lesions, scale]);
+
+  // 이미지 로드 및 크기 변경 시 스케일 업데이트
+  useEffect(() => {
+    if (imageRef.current && analysisResult?.acne_lesions && imageLoaded) {
+      const img = imageRef.current;
+      const newScale = {
+        x: img.clientWidth / img.naturalWidth,
+        y: img.clientHeight / img.naturalHeight
+      };
+
+      // 스케일이 실제로 변경되었을 때만 업데이트
+      if (newScale.x !== scale.x || newScale.y !== scale.y) {
+        setScale(newScale);
+      }
+    }
+  }, [imageLoaded, analysisResult?.acne_lesions, scale.x, scale.y]); // 경고 수정을 위해 scale.x, scale.y 추가
+
+  // 스케일이 변경될 때만 여드름 경계 다시 그리기
+  useEffect(() => {
+    if (imageLoaded && analysisResult?.acne_lesions) {
+      drawAcneBoundaries();
+    }
+  }, [scale, drawAcneBoundaries, imageLoaded, analysisResult?.acne_lesions]);
+
+  // 윈도우 리사이즈 이벤트 처리
+  useEffect(() => {
+    const handleResize = () => {
+      if (imageRef.current && analysisResult?.acne_lesions && imageLoaded) {
+        const img = imageRef.current;
+        const newScale = {
+          x: img.clientWidth / img.naturalWidth,
+          y: img.clientHeight / img.naturalHeight
+        };
+        setScale(newScale);
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [imageLoaded, analysisResult?.acne_lesions]);
+
+  const handleImageLoad = () => {
+    setImageLoaded(true);
+    if (imageRef.current && analysisResult) {
+      const img = imageRef.current;
+      setScale({
+        x: img.clientWidth / img.naturalWidth,
+        y: img.clientHeight / img.naturalHeight
+      });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-pink-50 via-purple-50 to-indigo-50 p-4">
@@ -414,111 +852,100 @@ const SkinAnalyzer2025 = () => {
           {currentStep === 'capture' && (
             <div className="text-center">
               <div className="mb-6">
-                <div className="w-80 h-80 bg-gradient-to-br from-gray-100 to-gray-200 rounded-3xl mx-auto flex items-center justify-center relative overflow-hidden shadow-inner">
+                <div className="w-80 h-80 bg-white rounded-3xl mx-auto relative overflow-hidden shadow-xl">
                   {cameraActive ? (
                     <>
-                      <video
-                        ref={videoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="w-full h-full object-cover rounded-3xl"
-                        style={{ transform: 'scaleX(-1)' }}
-                        onLoadedMetadata={() => console.log('비디오 메타데이터 로드됨')}
-                        onCanPlay={() => console.log('비디오 재생 가능')}
-                        onPlay={() => console.log('비디오 재생 시작')}
-                        onError={(e) => console.error('비디오 오류:', e)}
-                      />
+                      {renderCamera()}
                       {/* 2025년 얼굴 가이드라인 */}
                       <div className="absolute inset-0 pointer-events-none">
                         <div className="absolute top-1/2 left-1/2 w-48 h-60 border-2 border-white/60 rounded-full transform -translate-x-1/2 -translate-y-1/2 shadow-lg"></div>
-                        <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-black/70 text-white px-3 py-1 rounded-full text-xs">
-                          얼굴을 가이드라인에 맞춰주세요
-                        </div>
                       </div>
                     </>
                   ) : capturedImage ? (
-                    <img
-                      src={capturedImage}
-                      alt="촬영된 이미지"
-                      className="w-full h-full object-cover rounded-3xl"
-                    />
-                  ) : (
-                    <div className="text-gray-400 text-center">
-                      <Camera size={64} className="mx-auto mb-4 text-gray-300" />
-                      <h3 className="text-lg font-semibold mb-2">피부 분석을 시작하세요</h3>
-                      <p className="text-sm">사진을 촬영하거나 업로드하세요</p>
-                      <p className="text-xs mt-2 text-gray-500">정면 얼굴이 명확히 보이는 사진을 사용해주세요</p>
-                      <div className="mt-4 text-xs text-gray-400">
-                        <p>카메라 상태: {cameraActive ? '활성' : '비활성'}</p>
-                        <p>API 상태: {apiStatus}</p>
+                    <div className="w-full h-full bg-white rounded-3xl p-4">
+                      <div className="w-full h-full relative rounded-2xl overflow-hidden bg-gray-50">
+                        <img 
+                          ref={imageRef} 
+                          src={capturedImage} 
+                          alt="촬영된 이미지" 
+                          className="absolute inset-0 w-full h-full object-cover"
+                          style={{
+                            objectPosition: 'center',
+                          }}
+                        />
                       </div>
+                    </div>
+                  ) : (
+                    <div
+                      className={`absolute inset-0 flex flex-col items-center justify-center p-4 text-center transition-all duration-200 ease-in-out border-2 border-dashed
+                        ${isDragging ? 'bg-blue-50 border-blue-500' : 'border-gray-300'}`}
+                      onDragEnter={handleDragEnter}
+                      onDragLeave={handleDragLeave}
+                      onDragOver={handleDragOver}
+                      onDrop={handleDrop}
+                    >
+                      <Upload size={64} className={`mb-4 transition-colors duration-200 ${isDragging ? 'text-blue-500' : 'text-gray-300'}`} />
+                      <h3 className={`text-lg font-semibold mb-2 transition-colors duration-200 ${isDragging ? 'text-blue-600' : 'text-gray-700'}`}>
+                        {isDragging ? '여기에 놓아주세요' : '피부 분석을 시작하세요'}
+                      </h3>
+                      <p className={`text-sm transition-colors duration-200 ${isDragging ? 'text-blue-500' : 'text-gray-500'}`}>
+                        {isDragging ? '사진을 놓으면 자동으로 업로드됩니다' : '사진을 드래그하거나 업로드하세요'}
+                      </p>
+                      <p className="text-xs mt-2 text-gray-500">정면 얼굴이 명확히 보이는 사진을 사용해주세요</p>
                     </div>
                   )}
                 </div>
-                <canvas ref={canvasRef} className="hidden" />
+                <canvas ref={overlayCanvasRef} className="hidden" /> {/* overlayCanvasRef를 사용하도록 수정 */}
               </div>
 
-              <div className="space-y-3">
-                {!cameraActive && !capturedImage && (
-                  <>
-                    <button
-                      onClick={() => {
-                        console.log('카메라 버튼 클릭됨');
-                        console.log('API 상태:', apiStatus);
-                        console.log('카메라 활성 상태:', cameraActive);
-                        startCamera();
-                      }}
-                      disabled={apiStatus !== 'connected'}
-                      className="w-full bg-gradient-to-r from-pink-500 to-purple-600 text-white py-4 px-6 rounded-2xl font-semibold flex items-center justify-center gap-3 hover:from-pink-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
-                    >
-                      <Camera size={24} />
-                      <span>AI 카메라로 촬영</span>
-                    </button>
-                    
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={apiStatus !== 'connected'}
-                      className="w-full bg-gray-100 text-gray-700 py-4 px-6 rounded-2xl font-semibold flex items-center justify-center gap-3 hover:bg-gray-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg transform hover:scale-[1.02]"
-                    >
-                      <Upload size={24} />
-                      <span>갤러리에서 선택</span>
-                    </button>
-                  </>
-                )}
-                
-                {cameraActive && (
+              {capturedImage && !cameraActive && (
+                <div className="space-y-3 max-w-xs mx-auto">
                   <button
-                    onClick={capturePhoto}
-                    className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 px-6 rounded-2xl font-semibold hover:from-green-600 hover:to-emerald-700 transition-all shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
+                    onClick={analyzeSkin}
+                    disabled={apiStatus !== 'connected' || isLoading}
+                    className="w-full bg-blue-500 text-white py-4 px-6 rounded-2xl font-semibold hover:bg-blue-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
                   >
-                    📸 사진 촬영
+                    <Brain size={24} />
+                    <span>AI 피부 분석 시작</span>
                   </button>
-                )}
-                
-                {capturedImage && (
-                  <div className="space-y-3">
-                    <button
-                      onClick={analyzeSkin}
-                      disabled={apiStatus !== 'connected' || isLoading}
-                      className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white py-4 px-6 rounded-2xl font-semibold hover:from-blue-600 hover:to-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
-                    >
-                      <Brain size={24} />
-                      <span>AI 피부 분석 시작</span>
-                      <Sparkles size={20} />
-                    </button>
-                    
-                    <button
-                      onClick={resetAnalysis}
-                      disabled={isLoading}
-                      className="w-full bg-gray-100 text-gray-700 py-3 px-6 rounded-2xl font-semibold flex items-center justify-center gap-2 hover:bg-gray-200 transition-all disabled:opacity-50 shadow-md"
-                    >
-                      <RotateCw size={20} />
-                      다시 촬영
-                    </button>
-                  </div>
-                )}
-              </div>
+                  
+                  <button
+                    onClick={resetAnalysis}
+                    disabled={isLoading}
+                    className="w-full bg-gray-100 text-gray-700 py-4 px-6 rounded-2xl font-semibold flex items-center justify-center gap-3 hover:bg-gray-200 transition-all disabled:opacity-50 shadow-md hover:shadow-lg transform hover:scale-[1.02]"
+                  >
+                    <RotateCw size={20} />
+                    <span>다시 촬영</span>
+                  </button>
+                </div>
+              )}
+
+              {!cameraActive && !capturedImage && (
+                <div className="space-y-3 max-w-xs mx-auto">
+                  <button
+                    onClick={() => {
+                      console.log('카메라 버튼 클릭됨');
+                      console.log('API 상태:', apiStatus);
+                      console.log('카메라 활성 상태:', cameraActive);
+                      setCameraActive(true);
+                    }}
+                    disabled={apiStatus !== 'connected'}
+                    className="w-full bg-gradient-to-r from-pink-500 to-purple-600 text-white py-4 px-6 rounded-2xl font-semibold flex items-center justify-center gap-3 hover:from-pink-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
+                  >
+                    <Camera size={24} />
+                    <span>AI 카메라로 촬영</span>
+                  </button>
+                  
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={apiStatus !== 'connected'}
+                    className="w-full bg-gray-100 text-gray-700 py-4 px-6 rounded-2xl font-semibold flex items-center justify-center gap-3 hover:bg-gray-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg transform hover:scale-[1.02]"
+                  >
+                    <Upload size={24} />
+                    <span>갤러리에서 선택</span>
+                  </button>
+                </div>
+              )}
               
               <input
                 ref={fileInputRef}
@@ -613,23 +1040,51 @@ const SkinAnalyzer2025 = () => {
                   <p className="text-xs text-gray-500">{analysisResult.skin_tone}</p>
                 </div>
               )}
-              {/* --- 추가된 부분: 분석 이미지와 네모 박스 표시 --- */}
+
+              {/* 분석된 이미지와 여드름 위치 표시 */}
               <div className="relative mb-6 rounded-2xl overflow-hidden shadow-lg">
-                <img ref={imageRef} src={capturedImage} alt="분석된 이미지" className="w-full h-auto" />
-                {analysisResult.acne_lesions && analysisResult.acne_lesions.map((lesion, index) => (
+                <img 
+                  ref={imageRef}
+                  src={capturedImage}
+                  alt="분석된 이미지"
+                  className="w-full h-auto"
+                  onLoad={handleImageLoad}
+                />
+                {imageLoaded && analysisResult.acne_lesions && analysisResult.acne_lesions.map((lesion, index) => (
                   <div
                     key={index}
                     className="absolute border-2 border-red-500 rounded-sm"
                     style={{
                       left: `${lesion.x * scale.x}px`,
                       top: `${lesion.y * scale.y}px`,
-                      width: `${lesion.w * scale.x}px`,
-                      height: `${lesion.h * scale.y}px`,
+                      width: `${lesion.width * scale.x}px`,
+                      height: `${lesion.height * scale.y}px`,
+                      backgroundColor: 'rgba(255, 0, 0, 0.1)',
                     }}
-                  ></div>
+                  >
+                    <div className="absolute -top-5 left-0 bg-red-500 text-white text-xs px-2 py-1 rounded">
+                      {Math.round(lesion.confidence * 100)}%
+                    </div>
+                  </div>
                 ))}
               </div>
-              {/* --- 추가된 부분 끝 --- */}
+
+              {/* 여드름 감지 요약 */}
+              {analysisResult.acne_lesions && analysisResult.acne_lesions.length > 0 && (
+                <div className="bg-red-50 rounded-xl p-4 mb-6">
+                  <h4 className="font-bold text-red-800 mb-2 flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5" />
+                    여드름 감지 결과
+                  </h4>
+                  <p className="text-sm text-red-700">
+                    총 {analysisResult.acne_lesions.length}개의 여드름이 감지되었습니다.
+                  </p>
+                  <p className="text-xs text-red-600 mt-1">
+                    * 빨간색 박스는 AI가 감지한 여드름 위치를 나타냅니다.
+                  </p>
+                </div>
+              )}
+
               {/* 분석 결과 상세 (2025년 카드 디자인) */}
               <div className="grid grid-cols-2 gap-3 mb-6">
                 <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-2xl p-4 text-center">
@@ -675,6 +1130,18 @@ const SkinAnalyzer2025 = () => {
                   <div className="flex justify-between items-center">
                     <span className="text-gray-600">피부톤</span>
                     <span className="font-semibold text-gray-800">{analysisResult.skin_tone}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">예상 연령대</span>
+                    <span className="font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-pink-600">
+                      {analysisResult.age_range}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">연령 분석 신뢰도</span>
+                    <span className="font-semibold text-gray-800">
+                      {Math.round(analysisResult.age_confidence * 100)}%
+                    </span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-gray-600">주름 정도</span>
