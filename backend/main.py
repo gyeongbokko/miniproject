@@ -1,4 +1,3 @@
-# 2025년 최신 버전 - AI 피부 분석기 백엔드
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -42,7 +41,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI 피부 분석기 API", 
-    version="3.3.0-roboflow-final",
+    version="3.0.0",
     description="2025년 최신 기술 기반 클라우드 피부 분석 서비스",
     lifespan=lifespan
 )
@@ -104,11 +103,10 @@ class ModernSkinAnalyzer:
             
         # 나이 분석 모델 초기화
         self.age_model, self.age_transforms = self.init_age_model()
-
+        
         self.min_face_confidence = 0.8
         logger.info("🚀 2025년 최신 AI 피부 분석기 초기화 완료")
         logger.info("✨ OpenCV Face Detection 모델 로드 완료!")
-
     
     async def init_session(self):
         """비동기 HTTP 세션 초기화 (2025년 성능 최적화)"""
@@ -474,7 +472,7 @@ class ModernSkinAnalyzer:
             
             # 모델이 로드되지 않은 경우 기본값 반환
             if self.age_model is None or self.age_transforms is None:
-                return "20-29", 0.6
+                return "측정 불가", 0.6
             
             # 이미지 변환 및 모델 추론
             inputs = self.age_transforms(pil_image, return_tensors='pt')
@@ -489,13 +487,13 @@ class ModernSkinAnalyzer:
             age_ranges = {
                 0: "0-2",
                 1: "3-9",
-                2: "10-19",
-                3: "20-29",
-                4: "30-39",
-                5: "40-49",
-                6: "50-59",
-                7: "60-69",
-                8: "70+"
+                2: "10대",
+                3: "20대",
+                4: "30대",
+                5: "40대",
+                6: "50대",
+                7: "60대",
+                8: "70대 이상"
             }
             
             predicted_range = age_ranges[pred_class]
@@ -663,44 +661,43 @@ class ModernSkinAnalyzer:
             moisture_level, oil_level = self.calculate_levels_ai_2025(skin_type, skin_analysis)
             
             # 8. 여드름 감지 (2025년 고급 알고리즘)
-            acne_lesions = self.detect_acne_roboflow(image) # Roboflow 결과를 acne_lesions에 저장
-            blemish_count = len(acne_lesions) 
+            acne_lesions = self.detect_acne_roboflow(image)
             
             # 여드름 위치를 원본 이미지 좌표로 변환
-            #adjusted_acne_lesions = []
-            # for lesion in acne_lesions:
-            #     # 1단계: 얼굴 영역 내 좌표를 전처리된 이미지 좌표로 변환
-            #     face_x = lesion["x"] + bbox["xmin"]
-            #     face_y = lesion["y"] + bbox["ymin"]
+            adjusted_acne_lesions = []
+            for lesion in acne_lesions:
+                # 1단계: 얼굴 영역 내 좌표를 전처리된 이미지 좌표로 변환
+                face_x = lesion["x"] + bbox["xmin"]
+                face_y = lesion["y"] + bbox["ymin"]
                 
-            #     # 2단계: 전처리된 이미지 좌표를 원본 이미지 좌표로 변환
-            #     original_x = face_x / scale_x
-            #     original_y = face_y / scale_y
-            #     original_width = lesion["width"] / scale_x
-            #     original_height = lesion["height"] / scale_y
+                # 2단계: 전처리된 이미지 좌표를 원본 이미지 좌표로 변환
+                original_x = face_x / scale_x
+                original_y = face_y / scale_y
+                original_width = lesion["width"] / scale_x
+                original_height = lesion["height"] / scale_y
                 
-            #     adjusted_lesion = {
-            #         "x": int(original_x),
-            #         "y": int(original_y),
-            #         "width": int(original_width),
-            #         "height": int(original_height),
-            #         "confidence": lesion["confidence"],
-            #         "face_relative": {  # 얼굴 영역 내 상대 좌표 (디버깅용)
-            #             "x": lesion["x"],
-            #             "y": lesion["y"],
-            #             "width": lesion["width"],
-            #             "height": lesion["height"]
-            #         },
-            #         "processed_image": {  # 전처리된 이미지 좌표 (디버깅용)
-            #             "x": face_x,
-            #             "y": face_y,
-            #             "width": lesion["width"],
-            #             "height": lesion["height"]
-            #         }
-            #     }
-            #     adjusted_acne_lesions.append(adjusted_lesion)
+                adjusted_lesion = {
+                    "x": int(original_x),
+                    "y": int(original_y),
+                    "width": int(original_width),
+                    "height": int(original_height),
+                    "confidence": lesion["confidence"],
+                    "face_relative": {  # 얼굴 영역 내 상대 좌표 (디버깅용)
+                        "x": lesion["x"],
+                        "y": lesion["y"],
+                        "width": lesion["width"],
+                        "height": lesion["height"]
+                    },
+                    "processed_image": {  # 전처리된 이미지 좌표 (디버깅용)
+                        "x": face_x,
+                        "y": face_y,
+                        "width": lesion["width"],
+                        "height": lesion["height"]
+                    }
+                }
+                adjusted_acne_lesions.append(adjusted_lesion)
             
-            #blemish_count = len(acne_lesions)
+            blemish_count = len(adjusted_acne_lesions)
             
             # 9. 연령대 분석 (2025년 신규 추가)
             age_range, age_confidence = self.analyze_age_2025(face_image)
@@ -873,32 +870,23 @@ class ModernSkinAnalyzer:
             # URL을 기반으로 프로젝트 정보 설정
             project = rf.workspace("runner-e0dmy").project("acne-ijcab")
             model = project.version(1).model
-            
-            temp_dir = "temp_images"
+
+            temp_dir, temp_filename = "temp_images", f"{uuid.uuid4()}.jpg"
             os.makedirs(temp_dir, exist_ok=True)
-            temp_filename = f"{uuid.uuid4()}.jpg"
             temp_filepath = os.path.join(temp_dir, temp_filename)
-            
+
             cv2.imwrite(temp_filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
             prediction = model.predict(temp_filepath, confidence=15, overlap=45).json()
             os.remove(temp_filepath)
 
-            acne_lesions = []
-            for pred in prediction.get('predictions', []):
-                acne_lesions.append({
-                    "x": int(pred['x'] - pred['width'] / 2),
-                    "y": int(pred['y'] - pred['height'] / 2),
-                    "width": int(pred['width']),
-                    "height": int(pred['height']),
-                    "confidence": float(pred['confidence']),
-                    "class": pred['class']
-                })
-            logger.info(f"✅ Roboflow 여드름 감지 완료: 총 {len(acne_lesions)}개 발견")
-            return acne_lesions
+            return [{
+                "x": int(p['x'] - p['width'] / 2), "y": int(p['y'] - p['height'] / 2),
+                "width": int(p['width']), "height": int(p['height']),
+                "confidence": float(p['confidence']), "class": p['class']
+            } for p in prediction.get('predictions', [])]
         except Exception as e:
             logger.error(f"❌ Roboflow 여드름 감지 오류: {e}")
-            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
+            if 'temp_filepath' in locals() and os.path.exists(temp_filepath): os.remove(temp_filepath)
             return []
 
     def generate_acne_care_tips(self, skin_type: str, acne_count: int) -> List[str]:
@@ -1085,6 +1073,47 @@ async def analyze_skin_base64(request: dict):
         logger.error(f"예상치 못한 오류: {e}")
         raise HTTPException(status_code=500, detail=f"서버 오류가 발생했습니다: {str(e)}")
 
+@app.post("/detect-face-realtime")
+async def detect_face_realtime(request: dict):
+    """실시간 얼굴 감지만을 위한 초고속 경량 엔드포인트"""
+    global analyzer
+    if analyzer is None:
+        raise HTTPException(status_code=503, detail="AI 분석기가 준비되지 않았습니다.")
+        
+    try:
+        image_data = request.get('image')
+        if not image_data:
+            raise HTTPException(status_code=400, detail="이미지 데이터가 필요합니다.")
+
+        if ';base64,' in image_data:
+            _, image_data = image_data.split(';base64,')
+
+        image_bytes = base64.b64decode(image_data)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        image_array = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if image_array is None:
+             raise HTTPException(status_code=400, detail="이미지 디코딩 실패")
+
+        # OpenCV 얼굴 감지 함수만 호출
+        face_detection_result = analyzer.detect_face(image_array)
+        
+        return {
+            "success": True,
+            "face_detected": face_detection_result["face_detected"],
+            "confidence": face_detection_result.get("confidence", 0.0)
+        }
+
+    except Exception as e:
+        logger.error(f"실시간 얼굴 감지 오류: {e}")
+        # 오류 발생 시에도 정상적인 응답 구조를 반환하여 프론트엔드 오류 방지
+        return {
+            "success": False,
+            "face_detected": False,
+            "confidence": 0.0,
+            "error": str(e)
+        }
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)

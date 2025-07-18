@@ -1,4 +1,4 @@
-// 2025년 최신 React 피부 분석기 컴포넌트
+// 2025년 최신 React 피부 분석기 컴포넌트 (로그 추가)
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Camera, Upload, RotateCw, CheckCircle, AlertCircle, Loader, Sparkles, Brain, Zap } from 'lucide-react';
 
@@ -21,6 +21,7 @@ const SkinAnalyzer2025 = () => {
   const streamRef = useRef(null);
   const faceCheckInterval = useRef(null);
   const countDownInterval = useRef(null);
+  const countDownIntervalRef = useRef(null);
   const dropZoneRef = useRef(null);
   const [scale, setScale] = useState({ x: 1, y: 1 });
   const imageRef = useRef(null);
@@ -31,40 +32,53 @@ const SkinAnalyzer2025 = () => {
 
   // 카메라 정리 함수 추가
   const stopCamera = useCallback(() => {
-    console.log('카메라 정리 시작');
+    console.log('🔴 [CAMERA] 카메라 정리 시작');
     if (streamRef.current) {
+      console.log('🔴 [CAMERA] 스트림 트랙 정리 중...', streamRef.current.getTracks().length, '개');
       streamRef.current.getTracks().forEach(track => {
+        console.log('🔴 [CAMERA] 트랙 정지:', track.kind, track.readyState);
         track.stop();
       });
       streamRef.current = null;
     }
     if (videoRef.current) {
+      console.log('🔴 [CAMERA] 비디오 소스 정리');
       videoRef.current.srcObject = null;
     }
     setCameraActive(false);
-    console.log('카메라 정리 완료');
+    console.log('🔴 [CAMERA] 카메라 정리 완료');
   }, []);
 
   // 2025년 고화질 사진 촬영 (공통)
   const capturePhoto = useCallback(() => {
+    console.log('📸 [CAPTURE] 사진 촬영 시작');
     if (!videoRef.current || !canvasRef.current) {
-      console.error('비디오 또는 캔버스 요소가 없음');
+      console.error('📸 [CAPTURE] 비디오 또는 캔버스 요소가 없음');
       return;
     }
 
-    console.log('사진 촬영 시작');
     const canvas = canvasRef.current;
     const video = videoRef.current;
     
+    console.log('📸 [CAPTURE] 비디오 상태:', {
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight,
+      readyState: video.readyState,
+      currentTime: video.currentTime,
+      duration: video.duration
+    });
+    
     // 비디오가 준비되지 않은 경우 캡처하지 않음
     if (video.videoWidth === 0 || video.videoHeight === 0) {
-      console.error('비디오가 아직 준비되지 않았습니다');
+      console.error('📸 [CAPTURE] 비디오가 아직 준비되지 않았습니다');
       return;
     }
     
     // 고화질 캡처를 위한 캔버스 크기 설정
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    
+    console.log('📸 [CAPTURE] 캔버스 크기 설정:', canvas.width, 'x', canvas.height);
     
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = true;
@@ -80,11 +94,11 @@ const SkinAnalyzer2025 = () => {
     
     try {
       const imageData = canvas.toDataURL('image/jpeg', 0.95);
-      console.log('촬영된 이미지 크기:', imageData.length);
+      console.log('📸 [CAPTURE] 촬영된 이미지 크기:', imageData.length);
       
       // 이미지 데이터가 유효한지 확인
       if (imageData.length < 1000) {
-        console.error('캡처된 이미지가 너무 작습니다');
+        console.error('📸 [CAPTURE] 캡처된 이미지가 너무 작습니다');
         setError('사진 촬영에 실패했습니다. 다시 시도해주세요.');
         return;
       }
@@ -96,7 +110,7 @@ const SkinAnalyzer2025 = () => {
       // 이미지 로드 테스트
       const testImage = new Image();
       testImage.onload = () => {
-        console.log('캡처된 이미지 확인 완료:', {
+        console.log('📸 [CAPTURE] 캡처된 이미지 확인 완료:', {
           width: testImage.width,
           height: testImage.height
         });
@@ -105,152 +119,82 @@ const SkinAnalyzer2025 = () => {
         if (testImage.width > 0 && testImage.height > 0) {
           stopCamera();
           setFaceDetected(false);
+          console.log('📸 [CAPTURE] 사진 촬영 완료, 카메라 정지됨');
         } else {
-          console.error('캡처된 이미지가 유효하지 않습니다');
+          console.error('📸 [CAPTURE] 캡처된 이미지가 유효하지 않습니다');
           setError('사진 촬영에 실패했습니다. 다시 시도해주세요.');
         }
       };
       
       testImage.onerror = () => {
-        console.error('이미지 확인 중 오류 발생');
+        console.error('📸 [CAPTURE] 이미지 확인 중 오류 발생');
         setError('사진 촬영에 실패했습니다. 다시 시도해주세요.');
       };
       
       testImage.src = imageData;
       
     } catch (error) {
-      console.error('이미지 캡처 오류:', error);
+      console.error('📸 [CAPTURE] 이미지 캡처 오류:', error);
       setError('사진 촬영에 실패했습니다.');
     }
   }, [stopCamera]);
 
   // 카운트다운 시작
   const startCountDown = useCallback(() => {
-    console.log('카운트다운 시작 시도');
-    
-    // 비디오 준비 상태 확인
-    if (!videoRef.current || videoRef.current.videoWidth === 0 || videoRef.current.videoHeight === 0) {
-      console.log('비디오가 아직 준비되지 않아 카운트다운을 시작하지 않습니다.');
-      return;
-    }
+    console.log('⏰ [COUNTDOWN] 카운트다운 시작 신호 (로직은 checkFaceDetection에 통합됨)');
+  }, []);
 
-    console.log('비디오 준비 완료, 카운트다운 시작:', {
-      width: videoRef.current.videoWidth,
-      height: videoRef.current.videoHeight
-    });
-
-    if (countDownInterval.current) {
-      clearInterval(countDownInterval.current);
-    }
-    
-    setCountDown(3);
-    countDownInterval.current = setInterval(() => {
-      setCountDown(prev => {
-        if (prev <= 1) {
-          clearInterval(countDownInterval.current);
-          // 캡처 직전 마지막으로 비디오 상태 확인
-          if (videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-            capturePhoto();
-          } else {
-            console.error('캡처 시점에 비디오가 준비되지 않음');
-            setError('카메라가 준비되지 않았습니다. 다시 시도해주세요.');
-          }
-          return null;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [capturePhoto]);
-
-  // 얼굴 감지 상태 확인
+  // 얼굴 감지 상태 확인 (수정됨)
   const checkFaceDetection = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current || !cameraActive) return;
+    if (!videoRef.current || !canvasRef.current || !cameraActive || videoRef.current.readyState < 3) return;
 
     const video = videoRef.current;
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
     
-    // 비디오가 준비되지 않은 경우 얼굴 감지를 시도하지 않음
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      console.log('비디오가 아직 준비되지 않았습니다.');
-      return;
-    }
-
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    
+    canvas.width = video.videoWidth / 4;
+    canvas.height = video.videoHeight / 4;
     const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     try {
-      const imageData = canvas.toDataURL('image/jpeg', 0.95);
+      const imageData = canvas.toDataURL('image/jpeg', 0.7); 
       
-      const response = await fetch(`${API_BASE_URL}/analyze-skin-base64`, {
+      const response = await fetch(`${API_BASE_URL}/detect-face-realtime`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: imageData }),
       });
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('얼굴 감지 응답 오류:', errorData);
-        throw new Error(errorData.detail || '얼굴 감지 실패');
-      }
+      if (!response.ok) throw new Error('얼굴 감지 API 요청 실패');
       
       const data = await response.json();
-      console.log('얼굴 감지 응답:', data);
+      const newFaceDetected = data.face_detected && data.confidence >= 0.8;
       
-      const newFaceDetected = data.result.face_detected && data.result.confidence >= 0.8;
-      
-      // 얼굴 감지 상태가 변경되었을 때
-      if (newFaceDetected !== faceDetected) {
-        setFaceDetected(newFaceDetected);
-        
-        if (newFaceDetected && !countDown) {
-          console.log('얼굴 감지됨, 카운트다운 시작 시도');
-          // 비디오가 준비된 상태에서만 카운트다운 시작
-          if (video.videoWidth > 0 && video.videoHeight > 0) {
-            startCountDown();
-          } else {
-            console.log('비디오가 준비되지 않아 카운트다운을 연기합니다.');
-          }
-        }
-      }
-      
-      // 카운트다운 중 얼굴이 감지되지 않으면 초기화
-      if (!newFaceDetected && countDown) {
-        console.log('카운트다운 중 얼굴 감지 실패, 카운트다운 초기화');
-        clearInterval(countDownInterval.current);
-        setCountDown(null);
-      }
-      
+      // 이 함수는 이제 얼굴 인식 여부만 상태로 업데이트합니다.
+      setFaceDetected(newFaceDetected);
+
     } catch (error) {
-      console.error('얼굴 감지 오류:', error);
+      // console.error("얼굴 감지 루프 오류:", error); // 너무 자주 로그가 찍히므로 필요시 주석 해제
       setFaceDetected(false);
-      // 에러 발생 시 카운트다운 초기화
-      if (countDown) {
-        clearInterval(countDownInterval.current);
-        setCountDown(null);
-      }
     }
-  }, [API_BASE_URL, cameraActive, faceDetected, countDown, startCountDown]);
+  }, [API_BASE_URL, cameraActive]);
 
   // 2025년 API 상태 확인
   const checkApiHealth = useCallback(async () => {
+    console.log('🌐 [API] API 상태 확인 시작');
     try {
       const response = await fetch(`${API_BASE_URL}/health`);
       if (response.ok) {
         const data = await response.json();
         setApiStatus('connected');
-        console.log('🚀 2025년 AI 서버 연결됨:', data.version);
+        console.log('🌐 [API] 2025년 AI 서버 연결됨:', data.version);
       } else {
+        console.log('🌐 [API] API 응답 오류:', response.status);
         setApiStatus('error');
       }
     } catch (error) {
-      console.error('API 연결 실패:', error);
+      console.error('🌐 [API] API 연결 실패:', error);
       setApiStatus('error');
     }
   }, []);
@@ -264,9 +208,9 @@ const SkinAnalyzer2025 = () => {
 
   // 카메라 시작 (2025년 최신 웹캠 API)
   const startCamera = useCallback(async () => {
+    console.log('🎥 [CAMERA_START] 카메라 시작 시도...');
     try {
       setError(null);
-      console.log('카메라 시작 시도...');
       
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { 
@@ -277,7 +221,12 @@ const SkinAnalyzer2025 = () => {
         }
       });
       
-      console.log('카메라 스트림 획득 성공:', stream);
+      console.log('🎥 [CAMERA_START] 카메라 스트림 획득 성공:', stream);
+      console.log('🎥 [CAMERA_START] 스트림 정보:', {
+        tracks: stream.getTracks().length,
+        videoTracks: stream.getVideoTracks().length,
+        settings: stream.getVideoTracks()[0]?.getSettings()
+      });
       
       // 먼저 카메라 활성화 상태를 변경하여 비디오 요소를 렌더링
       setCameraActive(true);
@@ -285,15 +234,17 @@ const SkinAnalyzer2025 = () => {
       
       // 비디오 요소가 렌더링될 때까지 대기
       const initVideo = () => {
+        console.log('🎥 [CAMERA_START] 비디오 초기화 시도');
         if (videoRef.current) {
+          console.log('🎥 [CAMERA_START] 비디오 요소 발견, 스트림 연결');
           videoRef.current.srcObject = stream;
           videoRef.current.style.transform = 'scaleX(-1)';  // 화면 좌우 반전
           
           // 비디오 메타데이터 로드 완료 시 처리
           videoRef.current.onloadedmetadata = () => {
-            console.log('비디오 메타데이터 로드 완료');
+            console.log('🎥 [CAMERA_START] 비디오 메타데이터 로드 완료');
             videoRef.current.play().catch(e => {
-              console.error('비디오 재생 오류:', e);
+              console.error('🎥 [CAMERA_START] 비디오 재생 오류:', e);
               setError('비디오 재생에 실패했습니다.');
             });
           };
@@ -301,17 +252,19 @@ const SkinAnalyzer2025 = () => {
           // 비디오가 실제로 재생 가능한 상태가 되었을 때 처리
           videoRef.current.oncanplay = () => {
             const { videoWidth, videoHeight } = videoRef.current;
-            console.log('비디오 재생 준비 완료:', { videoWidth, videoHeight });
+            console.log('🎥 [CAMERA_START] 비디오 재생 준비 완료:', { videoWidth, videoHeight });
             
             // 비디오 크기가 유효한지 확인
             if (videoWidth === 0 || videoHeight === 0) {
-              console.error('비디오 크기가 유효하지 않음');
+              console.error('🎥 [CAMERA_START] 비디오 크기가 유효하지 않음');
               setError('카메라 초기화에 실패했습니다. 다시 시도해주세요.');
               stopCamera();
+            } else {
+              console.log('🎥 [CAMERA_START] 카메라 초기화 완료');
             }
           };
         } else {
-          console.log('비디오 요소가 아직 준비되지 않음, 재시도...');
+          console.log('🎥 [CAMERA_START] 비디오 요소가 아직 준비되지 않음, 재시도...');
           setTimeout(initVideo, 100);
         }
       };
@@ -319,7 +272,7 @@ const SkinAnalyzer2025 = () => {
       initVideo();
       
     } catch (error) {
-      console.error('카메라 접근 오류:', error);
+      console.error('🎥 [CAMERA_START] 카메라 접근 오류:', error);
       setError('카메라 접근에 실패했습니다.');
       setCameraActive(false);
       if (streamRef.current) {
@@ -332,27 +285,64 @@ const SkinAnalyzer2025 = () => {
   // 컴포넌트 정리
   useEffect(() => {
     return () => {
+      console.log('🗑️ [CLEANUP] 컴포넌트 정리 시작');
       if (faceCheckInterval.current) {
+        console.log('🗑️ [CLEANUP] 얼굴 감지 인터벌 정리');
         clearInterval(faceCheckInterval.current);
       }
       if (countDownInterval.current) {
+        console.log('🗑️ [CLEANUP] 카운트다운 인터벌 정리');
         clearInterval(countDownInterval.current);
       }
+      console.log('🗑️ [CLEANUP] 컴포넌트 정리 완료');
     };
   }, []);
 
   // 카메라 시작 시 얼굴 감지 시작
   useEffect(() => {
     if (cameraActive && videoRef.current) {
-      // 더 자주 체크하도록 간격 줄임 (1초 -> 500ms)
-      faceCheckInterval.current = setInterval(checkFaceDetection, 500);
+      // [문제 2 해결] 속도 개선을 위해 간격 조정
+      faceCheckInterval.current = setInterval(checkFaceDetection, 250); 
       return () => {
-        if (faceCheckInterval.current) {
-          clearInterval(faceCheckInterval.current);
-        }
+        clearInterval(faceCheckInterval.current);
+        // [문제 3 해결] 정리 시 카운트다운 확실히 초기화
+        setCountDown(null);
       };
     }
-  }, [cameraActive, checkFaceDetection]);
+  // [문제 1 해결] 의존성 배열에서 checkFaceDetection 제거
+  }, [cameraActive]);
+
+  // [수정] 카운트다운 로직을 별도의 useEffect로 분리
+  useEffect(() => {
+    // 얼굴이 감지되었고, 카운트다운이 아직 시작되지 않았다면
+    if (faceDetected && countDownIntervalRef.current === null) {
+      setCountDown(3); // 화면에 '3'을 먼저 표시
+
+      // 1초 간격의 실제 카운트다운 타이머 시작
+      countDownIntervalRef.current = setInterval(() => {
+        setCountDown(prev => {
+          if (prev > 1) {
+            return prev - 1; // 1보다 크면 숫자 감소
+          }
+          
+          // 카운트가 1이면, 타이머를 멈추고 사진 촬영
+          clearInterval(countDownIntervalRef.current);
+          countDownIntervalRef.current = null;
+          capturePhoto();
+          return null; // 카운트다운 상태 초기화
+        });
+      }, 1000); // 정확히 1초 간격으로 실행
+    } 
+    // 얼굴 인식이 끊겼다면
+    else if (!faceDetected) {
+      // 진행 중인 카운트다운이 있으면 즉시 중단하고 초기화
+      if (countDownIntervalRef.current) {
+        clearInterval(countDownIntervalRef.current);
+        countDownIntervalRef.current = null;
+      }
+      setCountDown(null);
+    }
+  }, [faceDetected, capturePhoto]); // faceDetected 상태가 바뀔 때마다 이 로직이 실행됩니다.
 
   // 카메라 렌더링
   const renderCamera = () => (
@@ -497,6 +487,7 @@ const SkinAnalyzer2025 = () => {
   // 드래그 앤 드롭 영역 렌더링
   const renderDropZone = () => (
     <div
+      ref={dropZoneRef}
       className={`relative w-full h-64 border-2 border-dashed rounded-lg p-4 text-center 
         ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300'} 
         transition-all duration-200 ease-in-out`}
@@ -676,15 +667,15 @@ const SkinAnalyzer2025 = () => {
   };
 
   useEffect(() => {
-    console.log('컴포넌트가 마운트되었습니다');
+    console.log('🔄 [MOUNT] 컴포넌트가 마운트되었습니다');
     return () => {
-      console.log('컴포넌트가 언마운트됩니다');
+      console.log('🔄 [UNMOUNT] 컴포넌트가 언마운트됩니다');
       stopCamera();
     };
-  }, [stopCamera]); // 경고 수정을 위해 stopCamera 추가
+  }, []);
 
   useEffect(() => {
-    console.log('카메라 활성 상태가 변경되었습니다:', cameraActive);
+    console.log('🔄 [CAMERA_EFFECT] 카메라 활성 상태가 변경되었습니다:', cameraActive);
     if (cameraActive) {
       startCamera();
     }
@@ -693,10 +684,10 @@ const SkinAnalyzer2025 = () => {
   // 이미지 크기에 따른 스케일 계산
   useEffect(() => {
     const calculateScale = () => {
-      if (imageRef.current && analysisResult?.image_size?.original.width > 0) {
+      if (imageRef.current && analysisResult?.analyzed_width > 0) {
         setScale({
-          x: imageRef.current.clientWidth / analysisResult.image_size.original.width,
-          y: imageRef.current.clientHeight / analysisResult.image_size.original.height,
+          x: imageRef.current.clientWidth / analysisResult.analyzed_width,
+          y: imageRef.current.clientHeight / analysisResult.analyzed_height,
         });
       }
     };
@@ -714,9 +705,9 @@ const SkinAnalyzer2025 = () => {
 
   // drawAcneBoundaries 함수를 useCallback으로 감싸서 메모이제이션
   const drawAcneBoundaries = useCallback(() => {
-    if (!overlayCanvasRef.current || !imageRef.current || !analysisResult?.acne_lesions) return; // overlayCanvasRef로 변경
+    if (!canvasRef.current || !imageRef.current || !analysisResult?.acne_lesions) return;
 
-    const canvas = overlayCanvasRef.current; // overlayCanvasRef로 변경
+    const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     const img = imageRef.current;
 
@@ -759,7 +750,7 @@ const SkinAnalyzer2025 = () => {
         setScale(newScale);
       }
     }
-  }, [imageLoaded, analysisResult?.acne_lesions, scale.x, scale.y]); // 경고 수정을 위해 scale.x, scale.y 추가
+  }, [imageLoaded, analysisResult?.acne_lesions]);
 
   // 스케일이 변경될 때만 여드름 경계 다시 그리기
   useEffect(() => {
@@ -871,12 +862,14 @@ const SkinAnalyzer2025 = () => {
                           className="absolute inset-0 w-full h-full object-cover"
                           style={{
                             objectPosition: 'center',
+                            transform: `scale(${scale.x}, ${scale.y})`
                           }}
                         />
                       </div>
                     </div>
                   ) : (
                     <div
+                      ref={dropZoneRef}
                       className={`absolute inset-0 flex flex-col items-center justify-center p-4 text-center transition-all duration-200 ease-in-out border-2 border-dashed
                         ${isDragging ? 'bg-blue-50 border-blue-500' : 'border-gray-300'}`}
                       onDragEnter={handleDragEnter}
@@ -895,7 +888,7 @@ const SkinAnalyzer2025 = () => {
                     </div>
                   )}
                 </div>
-                <canvas ref={overlayCanvasRef} className="hidden" /> {/* overlayCanvasRef를 사용하도록 수정 */}
+                <canvas ref={canvasRef} className="hidden" />
               </div>
 
               {capturedImage && !cameraActive && (
@@ -924,9 +917,9 @@ const SkinAnalyzer2025 = () => {
                 <div className="space-y-3 max-w-xs mx-auto">
                   <button
                     onClick={() => {
-                      console.log('카메라 버튼 클릭됨');
-                      console.log('API 상태:', apiStatus);
-                      console.log('카메라 활성 상태:', cameraActive);
+                      console.log('🔘 [BUTTON] 카메라 버튼 클릭됨');
+                      console.log('🔘 [BUTTON] API 상태:', apiStatus);
+                      console.log('🔘 [BUTTON] 카메라 활성 상태:', cameraActive);
                       setCameraActive(true);
                     }}
                     disabled={apiStatus !== 'connected'}
@@ -1050,7 +1043,7 @@ const SkinAnalyzer2025 = () => {
                   className="w-full h-auto"
                   onLoad={handleImageLoad}
                 />
-                {imageLoaded && analysisResult.acne_lesions && analysisResult.acne_lesions.map((lesion, index) => (
+                {analysisResult.acne_lesions && analysisResult.acne_lesions.map((lesion, index) => (
                   <div
                     key={index}
                     className="absolute border-2 border-red-500 rounded-sm"
