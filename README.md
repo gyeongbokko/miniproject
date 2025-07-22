@@ -55,12 +55,15 @@ AI 기반 실시간 피부 분석 웹 애플리케이션으로, 사용자의 얼
 graph LR
     A[Frontend] -->|HTTP/WebSocket| B[Backend]
     B -->|AI 분석 요청| C[Hugging Face API]
+    B -->|AI 분석 요청| F[OpenAI API]
     B -->|이미지 처리| D[OpenCV]
     B -->|피부 분석| E[Custom ML Models]
     C -->|응답| B
+    F -->|응답| B
     D -->|처리 결과| B
     E -->|분석 결과| B
     B -->|분석 결과| A
+
 ```
 
 ## 📡 API 명세
